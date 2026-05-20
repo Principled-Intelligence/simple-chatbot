@@ -4,7 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import AsyncMock, patch
 
-from simple_chatbot.agent import Agent
+from simple_chatbot.agent import SEARCH_TOOL, Agent
 from simple_chatbot.config import SimpleChatbotConfig
 
 
@@ -121,6 +121,60 @@ class AgentToolCallTests(unittest.TestCase):
             self.assertEqual(indexer.search_calls, [])
             second_messages = completion.await_args_list[1].kwargs["messages"]
             self.assertIn("unsupported tool", second_messages[-1]["content"])
+
+    def test_chat_result_exposes_tool_schema_and_invocations(self):
+        with TemporaryDirectory() as tmp:
+            indexer = _FakeIndexer()
+            agent = Agent(_config(tmp), indexer)
+            responses = [
+                _Response(
+                    _Message(
+                        tool_calls=[
+                            _ToolCall("call_1", "search_documents", '{"query": "alpha"}'),
+                        ]
+                    ),
+                    "tool_calls",
+                ),
+                _Response(_Message(content="Final answer."), "stop"),
+            ]
+
+            with patch("simple_chatbot.agent.litellm.acompletion", new_callable=AsyncMock) as completion:
+                completion.side_effect = responses
+                result = asyncio.run(agent.chat([{"role": "user", "content": "hello"}]))
+
+            self.assertEqual(result.content, "Final answer.")
+            self.assertEqual(result.tools, [SEARCH_TOOL])
+            self.assertEqual(len(result.tool_messages), 2)
+
+            assistant_msg, tool_msg = result.tool_messages
+            self.assertEqual(assistant_msg["role"], "assistant")
+            self.assertEqual(len(assistant_msg["tool_calls"]), 1)
+            self.assertEqual(assistant_msg["tool_calls"][0]["id"], "call_1")
+            self.assertEqual(
+                assistant_msg["tool_calls"][0]["function"]["name"],
+                "search_documents",
+            )
+
+            self.assertEqual(tool_msg["role"], "tool")
+            self.assertEqual(tool_msg["tool_call_id"], "call_1")
+            self.assertEqual(tool_msg["name"], "search_documents")
+            self.assertIn("No relevant documents", tool_msg["content"])
+
+    def test_chat_result_tools_present_when_no_tool_calls(self):
+        with TemporaryDirectory() as tmp:
+            indexer = _FakeIndexer()
+            agent = Agent(_config(tmp), indexer)
+            responses = [
+                _Response(_Message(content="Direct answer."), "stop"),
+            ]
+
+            with patch("simple_chatbot.agent.litellm.acompletion", new_callable=AsyncMock) as completion:
+                completion.side_effect = responses
+                result = asyncio.run(agent.chat([{"role": "user", "content": "hi"}]))
+
+            self.assertEqual(result.content, "Direct answer.")
+            self.assertEqual(result.tools, [SEARCH_TOOL])
+            self.assertEqual(result.tool_messages, [])
 
 
 if __name__ == "__main__":

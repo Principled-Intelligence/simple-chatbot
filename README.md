@@ -122,6 +122,10 @@ The app does not load `.env` automatically.
   non-streaming clients.
 - Agentic retrieval: the model decides when to call the `search_documents` tool
   and can search multiple times per turn.
+- Chat completion responses expose the agent's tool schemas (`tools`) and the
+  full intermediate tool-call / tool-result trace (`tool_messages`) as
+  non-standard fields, so an external LLM-as-judge can inspect what the agent
+  actually invoked.
 - Persistent ChromaDB storage, with automatic rebuilds when the embedding or
   chunking fingerprint changes.
 - Independent chat and embedding model selection through

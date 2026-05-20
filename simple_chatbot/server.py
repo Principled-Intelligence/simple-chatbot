@@ -187,4 +187,6 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
             ],
             "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
             "conversation_id": conversation_id,
+            "tools": result.tools,
+            "tool_messages": result.tool_messages,
         }

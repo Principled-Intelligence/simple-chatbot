@@ -1,5 +1,5 @@
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import litellm
 from loguru import logger
@@ -68,6 +68,8 @@ class ChatResult:
     content: str
     retrieved_chunks: list[Document]
     blocked_by_guard: bool = False
+    tools: list[dict] = field(default_factory=list)
+    tool_messages: list[dict] = field(default_factory=list)
 
 
 class Agent:
@@ -104,13 +106,19 @@ class Agent:
                     content=self.gate.refusal_text(decision),
                     retrieved_chunks=[],
                     blocked_by_guard=True,
+                    tools=[SEARCH_TOOL],
                 )
 
         if self.indexer.document_count() == 0:
             logger.bind(document_count=0).warning("No indexed documents available")
-            return ChatResult(content=EMPTY_KB_RESPONSE, retrieved_chunks=[])
+            return ChatResult(
+                content=EMPTY_KB_RESPONSE,
+                retrieved_chunks=[],
+                tools=[SEARCH_TOOL],
+            )
 
         all_chunks: list[Document] = []
+        tool_messages: list[dict] = []
         working: list[dict] = []
 
         if self.config.system_prompt:
@@ -157,7 +165,9 @@ class Agent:
 
             if finish_reason == "tool_calls" and assistant_msg.tool_calls:
                 round_log.bind(tool_call_count=len(assistant_msg.tool_calls)).info("Model requested tool calls")
-                working.append(assistant_msg.model_dump())
+                assistant_dump = assistant_msg.model_dump()
+                working.append(assistant_dump)
+                tool_messages.append(assistant_dump)
 
                 for tc_idx, tool_call in enumerate(assistant_msg.tool_calls, start=1):
                     fn = getattr(tool_call, "function", None)
@@ -193,19 +203,25 @@ class Agent:
                             context = "No relevant documents found."
 
                     tool_log.bind(result_chars=len(context)).debug("Tool result prepared")
-                    working.append(
-                        {
-                            "role": "tool",
-                            "tool_call_id": tool_call_id,
-                            "content": context,
-                        }
-                    )
+                    tool_result_msg = {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "name": fn_name,
+                        "content": context,
+                    }
+                    working.append(tool_result_msg)
+                    tool_messages.append(tool_result_msg)
 
                 continue
 
             round_log.bind(response_chars=len(last_content)).info("Final answer produced")
             logger.bind(answer_preview=last_content[:120]).debug("Answer preview")
-            return ChatResult(content=last_content, retrieved_chunks=all_chunks)
+            return ChatResult(
+                content=last_content,
+                retrieved_chunks=all_chunks,
+                tools=[SEARCH_TOOL],
+                tool_messages=tool_messages,
+            )
 
         logger.bind(max_tool_rounds=self.config.max_tool_rounds).warning(
             "Reached max tool rounds without final answer"
@@ -226,4 +242,9 @@ class Agent:
             final_response = ""
 
         logger.bind(response_chars=len(final_response)).info("Forced final response produced")
-        return ChatResult(content=final_response, retrieved_chunks=all_chunks)
+        return ChatResult(
+            content=final_response,
+            retrieved_chunks=all_chunks,
+            tools=[SEARCH_TOOL],
+            tool_messages=tool_messages,
+        )
