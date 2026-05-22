@@ -73,6 +73,7 @@ def _silence_litellm() -> None:
 
         litellm.set_verbose = False
         litellm.suppress_debug_info = True
+        litellm.num_retries = 5
         if hasattr(litellm, "telemetry"):
             litellm.telemetry = False
     except Exception:
