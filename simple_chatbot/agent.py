@@ -16,6 +16,11 @@ EMPTY_KB_RESPONSE = (
     "and reindex it before asking document-based questions."
 )
 
+FINAL_ANSWER_INSTRUCTION = (
+    "You have exhausted the available tool calls. Based on the search results already "
+    "in the conversation, write your final answer now in plain text. Do not request any more tools."
+)
+
 SEARCH_TOOL = {
     "type": "function",
     "function": {
@@ -210,20 +215,41 @@ class Agent:
         logger.bind(max_tool_rounds=self.config.max_tool_rounds).warning(
             "Reached max tool rounds without final answer"
         )
+
+        context_block = "\n\n".join(
+            f"[{d.metadata.get('source', 'unknown')}]\n{d.text}" for d in all_chunks
+        )
+
+        system_content = (self.config.system_prompt or "") + "\n\n" + FINAL_ANSWER_INSTRUCTION
+        if context_block:
+            system_content += "\n\nRelevant search results:\n" + context_block
+
+        forced_messages: list[dict] = [{"role": "system", "content": system_content}]
+        forced_messages.extend(messages)
+
         forced_response_kwargs: dict = {
             "model": self.config.chat_model,
-            "messages": working,
+            "messages": forced_messages,
             "tool_choice": "none",
         }
         if self.config.chat_api_base:
             forced_response_kwargs["api_base"] = self.config.chat_api_base
 
+        final_response = ""
         try:
-            final_response = await litellm.acompletion(**forced_response_kwargs)
-            final_response = final_response.choices[0].message.content or ""
+            raw = await litellm.acompletion(**forced_response_kwargs)
+            choice = raw.choices[0]
+            message = choice.message
+            final_response = message.content or ""
+            reasoning = getattr(message, "reasoning_content", None)
+            logger.bind(
+                finish_reason=choice.finish_reason,
+                completion_tokens=raw.usage.completion_tokens if raw.usage else None,
+                content_chars=len(final_response),
+                reasoning_chars=len(reasoning) if reasoning else 0,
+            ).info("Forced final response call returned")
         except Exception as exc:
             logger.bind(error=str(exc)).warning("Forced final response call failed")
-            final_response = ""
 
         logger.bind(response_chars=len(final_response)).info("Forced final response produced")
         return ChatResult(content=final_response, retrieved_chunks=all_chunks)
