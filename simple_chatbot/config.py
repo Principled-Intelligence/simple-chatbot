@@ -43,6 +43,15 @@ class SimpleChatbotConfig(BaseModel):
     max_tool_rounds: int = 3
     system_prompt: str | None = None
 
+    # Sampling parameters forwarded to litellm — all default None (use model defaults).
+    temperature: float | None = None
+    top_p: float | None = None
+    gen_top_k: int | None = None
+    min_p: float | None = None
+    presence_penalty: float | None = None
+    frequency_penalty: float | None = None
+    repetition_penalty: float | None = None
+
     guard: GuardConfig = GuardConfig()
 
     @model_validator(mode="after")

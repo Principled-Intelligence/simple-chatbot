@@ -90,6 +90,14 @@ class Agent:
             max_tool_rounds=config.max_tool_rounds,
         ).info("Agent initialised")
 
+    def _sampling_kwargs(self) -> dict:
+        """Return only the sampling params the user set explicitly (skip None)."""
+        fields = (
+            "temperature", "top_p", "gen_top_k", "min_p",
+            "presence_penalty", "frequency_penalty", "repetition_penalty",
+        )
+        return {f: getattr(self.config, f) for f in fields if getattr(self.config, f) is not None}
+
     async def chat(self, messages: list[dict]) -> ChatResult:
         logger.bind(
             message_count=len(messages),
@@ -139,6 +147,7 @@ class Agent:
             if self.config.chat_api_base:
                 kwargs["api_base"] = self.config.chat_api_base
                 logger.bind(api_base=self.config.chat_api_base).debug("Using custom chat API base")
+            kwargs.update(self._sampling_kwargs())
 
             logger.bind(
                 model=self.config.chat_model,
@@ -234,6 +243,7 @@ class Agent:
         }
         if self.config.chat_api_base:
             forced_response_kwargs["api_base"] = self.config.chat_api_base
+        forced_response_kwargs.update(self._sampling_kwargs())
 
         final_response = ""
         try:
