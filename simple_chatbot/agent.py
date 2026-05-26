@@ -70,6 +70,8 @@ class ChatResult:
     blocked_by_guard: bool = False
     tools: list[dict] = field(default_factory=list)
     tool_messages: list[dict] = field(default_factory=list)
+    usage: dict = field(default_factory=lambda: {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+    final_messages: list[dict] = field(default_factory=list)
 
 
 class Agent:
@@ -93,6 +95,8 @@ class Agent:
             last_role=messages[-1].get("role") if messages else "none",
         ).info("Chat started")
 
+        usage_totals: dict = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
         if self.gate is not None:
             decision = await self.gate.check(messages)
             logger.bind(
@@ -107,6 +111,7 @@ class Agent:
                     retrieved_chunks=[],
                     blocked_by_guard=True,
                     tools=[SEARCH_TOOL],
+                    usage=usage_totals,
                 )
 
         if self.indexer.document_count() == 0:
@@ -115,6 +120,7 @@ class Agent:
                 content=EMPTY_KB_RESPONSE,
                 retrieved_chunks=[],
                 tools=[SEARCH_TOOL],
+                usage=usage_totals,
             )
 
         all_chunks: list[Document] = []
@@ -158,6 +164,9 @@ class Agent:
                     completion=usage.completion_tokens,
                     total=usage.total_tokens,
                 ).info("Token usage")
+                usage_totals["prompt_tokens"] += getattr(usage, "prompt_tokens", 0) or 0
+                usage_totals["completion_tokens"] += getattr(usage, "completion_tokens", 0) or 0
+                usage_totals["total_tokens"] += getattr(usage, "total_tokens", 0) or 0
 
             last_content = assistant_msg.content or ""
             finish_reason = choice.finish_reason
@@ -221,6 +230,7 @@ class Agent:
                 retrieved_chunks=all_chunks,
                 tools=[SEARCH_TOOL],
                 tool_messages=tool_messages,
+                usage=usage_totals,
             )
 
         logger.bind(max_tool_rounds=self.config.max_tool_rounds).warning(
@@ -236,6 +246,11 @@ class Agent:
 
         try:
             final_response = await litellm.acompletion(**forced_response_kwargs)
+            final_usage = final_response.usage
+            if final_usage:
+                usage_totals["prompt_tokens"] += getattr(final_usage, "prompt_tokens", 0) or 0
+                usage_totals["completion_tokens"] += getattr(final_usage, "completion_tokens", 0) or 0
+                usage_totals["total_tokens"] += getattr(final_usage, "total_tokens", 0) or 0
             final_response = final_response.choices[0].message.content or ""
         except Exception as exc:
             logger.bind(error=str(exc)).warning("Forced final response call failed")
@@ -247,4 +262,5 @@ class Agent:
             retrieved_chunks=all_chunks,
             tools=[SEARCH_TOOL],
             tool_messages=tool_messages,
+            usage=usage_totals,
         )
