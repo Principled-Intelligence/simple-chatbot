@@ -64,3 +64,117 @@ class NormalizeInputTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+from simple_chatbot.agent import ChatResult
+from simple_chatbot.responses import build_output_items
+
+
+class _Doc:
+    # ChatResult.retrieved_chunks holds Document instances; we don't need them here.
+    pass
+
+
+def _chat_result(
+    content: str,
+    tool_messages: list[dict] | None = None,
+) -> ChatResult:
+    return ChatResult(
+        content=content,
+        retrieved_chunks=[],
+        tools=[],
+        tool_messages=tool_messages or [],
+    )
+
+
+class BuildOutputItemsTests(unittest.TestCase):
+    def test_message_only_when_no_tool_calls(self):
+        items = build_output_items(_chat_result("hello"))
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["type"], "message")
+        self.assertEqual(items[0]["role"], "assistant")
+        self.assertEqual(items[0]["content"][0]["text"], "hello")
+        self.assertEqual(items[0]["content"][0]["type"], "output_text")
+
+    def test_single_tool_call_pair_and_message(self):
+        tool_messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_abc",
+                        "type": "function",
+                        "function": {"name": "search_documents", "arguments": '{"query": "x"}'},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_abc",
+                "name": "search_documents",
+                "content": "RESULT",
+            },
+        ]
+        items = build_output_items(_chat_result("final", tool_messages))
+        types = [it["type"] for it in items]
+        self.assertEqual(types, ["function_call", "function_call_output", "message"])
+        self.assertEqual(items[0]["call_id"], "call_abc")
+        self.assertEqual(items[0]["name"], "search_documents")
+        self.assertEqual(items[0]["arguments"], '{"query": "x"}')
+        self.assertEqual(items[1]["call_id"], "call_abc")
+        self.assertEqual(items[1]["output"], "RESULT")
+        self.assertEqual(items[2]["content"][0]["text"], "final")
+
+    def test_multiple_tool_calls_interleaved(self):
+        tool_messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "name": "search_documents", "content": "R1"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c2", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                    {"id": "c3", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c2", "name": "search_documents", "content": "R2"},
+            {"role": "tool", "tool_call_id": "c3", "name": "search_documents", "content": "R3"},
+        ]
+        items = build_output_items(_chat_result("done", tool_messages))
+        types = [it["type"] for it in items]
+        self.assertEqual(
+            types,
+            [
+                "function_call", "function_call_output",
+                "function_call", "function_call", "function_call_output", "function_call_output",
+                "message",
+            ],
+        )
+        # call_id linkage preserved
+        call_ids = [it["call_id"] for it in items if it["type"] in ("function_call", "function_call_output")]
+        self.assertEqual(call_ids, ["c1", "c1", "c2", "c3", "c2", "c3"])
+
+    def test_tool_error_appears_in_function_call_output(self):
+        tool_messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "search_documents", "arguments": "{not"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "name": "search_documents", "content": "Tool error: bad JSON"},
+        ]
+        items = build_output_items(_chat_result("recovered", tool_messages))
+        fco = next(it for it in items if it["type"] == "function_call_output")
+        self.assertIn("Tool error", fco["output"])
+
+    def test_each_item_has_unique_stable_id(self):
+        items = build_output_items(_chat_result("hi"))
+        ids = [it["id"] for it in items]
+        # Message item id should start with `msg_`
+        self.assertTrue(ids[0].startswith("msg_"))

@@ -23,6 +23,19 @@ Planned additions (Tasks 5-7):
 
 from __future__ import annotations
 
+import uuid
+
+from openai.types.responses import (
+    ResponseFunctionToolCall,
+    ResponseOutputMessage,
+)
+from openai.types.responses.response_function_tool_call_output_item import (
+    ResponseFunctionToolCallOutputItem,
+)
+from openai.types.responses.response_output_text import ResponseOutputText
+
+from simple_chatbot.agent import ChatResult
+
 
 class InvalidInputError(ValueError):
     """Raised when a Responses API `input` value can't be normalized."""
@@ -69,3 +82,64 @@ def normalize_input(value: str | list) -> list[dict]:
         raise InvalidInputError(f"input[{idx}] must be a string or dict, got {type(item).__name__}")
 
     return messages
+
+
+def _fc_id() -> str:
+    return f"fc_{uuid.uuid4().hex}"
+
+
+def _fco_id() -> str:
+    return f"fco_{uuid.uuid4().hex}"
+
+
+def _msg_id() -> str:
+    return f"msg_{uuid.uuid4().hex}"
+
+
+def build_output_items(result: ChatResult) -> list[dict]:
+    """Convert a ChatResult into the ordered Responses API `output` array."""
+    items: list[dict] = []
+
+    for msg in result.tool_messages:
+        role = msg.get("role")
+        if role == "assistant":
+            for tc in msg.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                items.append(
+                    ResponseFunctionToolCall(
+                        type="function_call",
+                        id=_fc_id(),
+                        call_id=tc["id"],
+                        name=fn.get("name", ""),
+                        arguments=fn.get("arguments", "") or "",
+                        status="completed",
+                    ).model_dump()
+                )
+        elif role == "tool":
+            items.append(
+                ResponseFunctionToolCallOutputItem(
+                    type="function_call_output",
+                    id=_fco_id(),
+                    call_id=msg["tool_call_id"],
+                    output=msg.get("content") or "",
+                    status="completed",
+                ).model_dump()
+            )
+
+    items.append(
+        ResponseOutputMessage(
+            id=_msg_id(),
+            type="message",
+            role="assistant",
+            status="completed",
+            content=[
+                ResponseOutputText(
+                    type="output_text",
+                    text=result.content or "",
+                    annotations=[],
+                )
+            ],
+        ).model_dump()
+    )
+
+    return items
