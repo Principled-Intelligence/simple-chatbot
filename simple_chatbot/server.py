@@ -11,12 +11,19 @@ from simple_chatbot.config import SimpleChatbotConfig
 from simple_chatbot.conversation_logger import ConversationLogger, derive_conversation_id
 from simple_chatbot.guard import ScopeGuardGate
 from simple_chatbot.indexer import Indexer
+from simple_chatbot.responses import (
+    InvalidInputError,
+    ResponseStore,
+    build_response,
+    normalize_input,
+)
 
 app = FastAPI(title="simple-chatbot")
 
 _config: SimpleChatbotConfig | None = None
 _agent: Agent | None = None
 _conversation_logger: ConversationLogger | None = None
+_response_store: ResponseStore | None = None
 
 
 @app.middleware("http")
@@ -47,7 +54,7 @@ async def _log_requests(request: Request, call_next):
 
 
 def init(config: SimpleChatbotConfig, indexer: Indexer) -> None:
-    global _config, _agent, _conversation_logger
+    global _config, _agent, _conversation_logger, _response_store
     _config = config
     gate: ScopeGuardGate | None = None
     if config.guard.enabled:
@@ -61,6 +68,7 @@ def init(config: SimpleChatbotConfig, indexer: Indexer) -> None:
         ).info("Scope guard enabled")
     _agent = Agent(config, indexer, gate=gate)
     _conversation_logger = ConversationLogger(config.conversation_log_dir)
+    _response_store = ResponseStore()
     logger.bind(
         model=config.chat_model,
         top_k=config.top_k,
@@ -77,6 +85,18 @@ class ChatCompletionRequest(BaseModel):
     # client, it's used as the conversation id; otherwise one is derived
     # from the first user message.
     user: str | None = None
+
+
+class ResponsesRequest(BaseModel):
+    model: str | None = None
+    input: str | list = ""
+    previous_response_id: str | None = None
+    tools: list | None = None
+    tool_choice: object = None
+    user: str | None = None
+    stream: bool = False
+    # All other Responses API fields are accepted but ignored.
+    model_config = {"extra": "allow"}
 
 
 def _require_auth(request: Request) -> None:
@@ -190,3 +210,80 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
             "tools": result.tools,
             "tool_messages": result.tool_messages,
         }
+
+
+@app.post("/v1/responses")
+async def responses_create(request: Request, body: ResponsesRequest):
+    _require_auth(request)
+
+    if body.stream:
+        logger.bind(stream=body.stream).warning("Rejected streaming response request")
+        raise HTTPException(
+            status_code=400,
+            detail=_openai_error(
+                "stream=true is not supported by this server yet",
+                "invalid_request_error",
+                "stream",
+            ),
+        )
+
+    try:
+        new_messages = normalize_input(body.input)
+    except InvalidInputError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=_openai_error(str(exc), "invalid_request_error", "input"),
+        ) from exc
+
+    # Single-turn path — chain handling lands in Task 10.
+    messages = new_messages
+
+    conversation_id = (
+        body.user
+        or request.headers.get("x-conversation-id")
+        or derive_conversation_id(messages)
+    )
+
+    with logger.contextualize(conversation_id=conversation_id):
+        logger.bind(
+            model=body.model,
+            message_count=len(messages),
+            previous_response_id=body.previous_response_id,
+        ).info("Response create started")
+
+        start = time.perf_counter()
+        result = await _agent.chat(messages)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+
+        payload = build_response(
+            result=result,
+            model=_config.chat_model,
+            previous_response_id=body.previous_response_id,
+            conversation_id=conversation_id,
+        )
+
+        logger.bind(
+            response_id=payload["id"],
+            duration_ms=round(elapsed_ms, 1),
+            output_item_count=len(payload["output"]),
+        ).info("Response create finished")
+
+        await _conversation_logger.log(
+            conversation_id=conversation_id,
+            messages=messages,
+            response=result.content,
+            chunks=[{"text": d.text, **d.metadata} for d in result.retrieved_chunks],
+        )
+
+        await _response_store.put(
+            payload["id"],
+            {
+                "response_id": payload["id"],
+                "previous_response_id": body.previous_response_id,
+                "session_messages": list(result.final_messages),
+                "response_json": payload,
+                "conversation_id": conversation_id,
+            },
+        )
+
+        return payload
