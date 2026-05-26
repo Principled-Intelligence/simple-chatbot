@@ -62,10 +62,6 @@ class NormalizeInputTests(unittest.TestCase):
             normalize_input([42])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 from simple_chatbot.agent import ChatResult
 from simple_chatbot.responses import build_output_items
 
@@ -178,3 +174,7 @@ class BuildOutputItemsTests(unittest.TestCase):
         ids = [it["id"] for it in items]
         # Message item id should start with `msg_`
         self.assertTrue(ids[0].startswith("msg_"))
+
+
+if __name__ == "__main__":
+    unittest.main()
