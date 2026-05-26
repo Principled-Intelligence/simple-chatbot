@@ -23,16 +23,20 @@ Planned additions (Tasks 5-7):
 
 from __future__ import annotations
 
+import time
 import uuid
 
 from openai.types.responses import (
+    Response,
     ResponseFunctionToolCall,
     ResponseOutputMessage,
+    ResponseUsage,
 )
 from openai.types.responses.response_function_tool_call_output_item import (
     ResponseFunctionToolCallOutputItem,
 )
 from openai.types.responses.response_output_text import ResponseOutputText
+from openai.types.responses.response_usage import InputTokensDetails, OutputTokensDetails
 
 from simple_chatbot.agent import ChatResult
 
@@ -143,3 +147,45 @@ def build_output_items(result: ChatResult) -> list[dict]:
     )
 
     return items
+
+
+def _resp_id() -> str:
+    return f"resp_{uuid.uuid4().hex}"
+
+
+def build_response(
+    result: ChatResult,
+    model: str,
+    previous_response_id: str | None,
+    conversation_id: str,
+) -> dict:
+    """Build the full Responses API response payload from a ChatResult."""
+    usage = result.usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    response_obj = Response(
+        id=_resp_id(),
+        object="response",
+        created_at=int(time.time()),
+        model=model,
+        output=[],
+        parallel_tool_calls=True,
+        tool_choice="auto",
+        tools=[],
+        status="completed",
+        previous_response_id=previous_response_id,
+        usage=ResponseUsage(
+            input_tokens=usage.get("prompt_tokens", 0),
+            input_tokens_details=InputTokensDetails(cached_tokens=0),
+            output_tokens=usage.get("completion_tokens", 0),
+            output_tokens_details=OutputTokensDetails(reasoning_tokens=0),
+            total_tokens=usage.get("total_tokens", 0),
+        ),
+    )
+
+    payload = response_obj.model_dump()
+    payload["output"] = build_output_items(result)
+    # Ensure created_at is an int (the SDK model uses float internally).
+    payload["created_at"] = int(payload["created_at"])
+    # Non-standard extension we add at the envelope level (same as chat completions).
+    payload["conversation_id"] = conversation_id
+    return payload

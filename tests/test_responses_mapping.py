@@ -176,5 +176,52 @@ class BuildOutputItemsTests(unittest.TestCase):
         self.assertTrue(ids[0].startswith("msg_"))
 
 
+from simple_chatbot.responses import build_response
+
+
+class BuildResponseTests(unittest.TestCase):
+    def test_basic_envelope_fields(self):
+        result = ChatResult(
+            content="hi",
+            retrieved_chunks=[],
+            usage={"prompt_tokens": 3, "completion_tokens": 5, "total_tokens": 8},
+        )
+        payload = build_response(
+            result=result,
+            model="openai/gpt-5.4-nano",
+            previous_response_id=None,
+            conversation_id="conv_abc",
+        )
+        self.assertEqual(payload["object"], "response")
+        self.assertEqual(payload["status"], "completed")
+        self.assertEqual(payload["model"], "openai/gpt-5.4-nano")
+        self.assertEqual(payload["conversation_id"], "conv_abc")
+        self.assertIsNone(payload["previous_response_id"])
+        self.assertTrue(payload["id"].startswith("resp_"))
+        self.assertIsInstance(payload["created_at"], int)
+        # Output: just the final message item
+        self.assertEqual([it["type"] for it in payload["output"]], ["message"])
+
+    def test_usage_renamed_to_openai_fields(self):
+        result = ChatResult(
+            content="hi",
+            retrieved_chunks=[],
+            usage={"prompt_tokens": 10, "completion_tokens": 4, "total_tokens": 14},
+        )
+        payload = build_response(result, "m", None, "conv")
+        self.assertEqual(payload["usage"]["input_tokens"], 10)
+        self.assertEqual(payload["usage"]["output_tokens"], 4)
+        self.assertEqual(payload["usage"]["total_tokens"], 14)
+
+    def test_previous_response_id_echoed(self):
+        payload = build_response(
+            ChatResult(content="x", retrieved_chunks=[]),
+            "m",
+            previous_response_id="resp_prior",
+            conversation_id="conv",
+        )
+        self.assertEqual(payload["previous_response_id"], "resp_prior")
+
+
 if __name__ == "__main__":
     unittest.main()
