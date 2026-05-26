@@ -112,6 +112,7 @@ class Agent:
                     blocked_by_guard=True,
                     tools=[SEARCH_TOOL],
                     usage=usage_totals,
+                    final_messages=list(messages),
                 )
 
         if self.indexer.document_count() == 0:
@@ -121,13 +122,15 @@ class Agent:
                 retrieved_chunks=[],
                 tools=[SEARCH_TOOL],
                 usage=usage_totals,
+                final_messages=list(messages),
             )
 
         all_chunks: list[Document] = []
         tool_messages: list[dict] = []
         working: list[dict] = []
 
-        if self.config.system_prompt:
+        already_has_system = bool(messages) and messages[0].get("role") == "system"
+        if self.config.system_prompt and not already_has_system:
             logger.bind(system_prompt_chars=len(self.config.system_prompt)).info("Prepending system prompt")
             working.append({"role": "system", "content": self.config.system_prompt})
 
@@ -225,12 +228,14 @@ class Agent:
 
             round_log.bind(response_chars=len(last_content)).info("Final answer produced")
             logger.bind(answer_preview=last_content[:120]).debug("Answer preview")
+            final_messages = list(working) + [{"role": "assistant", "content": last_content}]
             return ChatResult(
                 content=last_content,
                 retrieved_chunks=all_chunks,
                 tools=[SEARCH_TOOL],
                 tool_messages=tool_messages,
                 usage=usage_totals,
+                final_messages=final_messages,
             )
 
         logger.bind(max_tool_rounds=self.config.max_tool_rounds).warning(
@@ -257,10 +262,12 @@ class Agent:
             final_response = ""
 
         logger.bind(response_chars=len(final_response)).info("Forced final response produced")
+        final_messages = list(working) + [{"role": "assistant", "content": final_response}]
         return ChatResult(
             content=final_response,
             retrieved_chunks=all_chunks,
             tools=[SEARCH_TOOL],
             tool_messages=tool_messages,
             usage=usage_totals,
+            final_messages=final_messages,
         )
