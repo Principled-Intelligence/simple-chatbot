@@ -316,3 +316,19 @@ async def responses_create(request: Request, body: ResponsesRequest):
         )
 
         return payload
+
+
+@app.get("/v1/responses/{response_id}")
+async def responses_retrieve(response_id: str, request: Request):
+    _require_auth(request)
+    entry = await _response_store.get(response_id)
+    if entry is None:
+        raise HTTPException(
+            status_code=404,
+            detail=_openai_error(
+                f"response {response_id!r} not found",
+                "invalid_request_error",
+                "response_id",
+            ),
+        )
+    return entry["response_json"]

@@ -206,5 +206,38 @@ class ResponsesChainTests(ResponsesEndpointTests):
         self.assertEqual(detail["param"], "input")
 
 
+class ResponsesRetrieveTests(ResponsesEndpointTests):
+    def test_get_returns_stored_response(self):
+        created = self.client.post("/v1/responses", json={"input": "hi"}).json()
+        got = self.client.get(f"/v1/responses/{created['id']}")
+        self.assertEqual(got.status_code, 200)
+        self.assertEqual(got.json(), created)
+
+    def test_get_unknown_id_returns_404(self):
+        got = self.client.get("/v1/responses/resp_unknown")
+        self.assertEqual(got.status_code, 404)
+
+    def test_get_respects_auth(self):
+        server._config = SimpleChatbotConfig(
+            docs_dir=Path(self.tmp.name) / "docs",
+            conversation_log_dir=Path(self.tmp.name) / "conversations",
+            api_key="secret",
+        )
+        created = self.client.post(
+            "/v1/responses",
+            json={"input": "hi"},
+            headers={"Authorization": "Bearer secret"},
+        ).json()
+
+        no_auth = self.client.get(f"/v1/responses/{created['id']}")
+        self.assertEqual(no_auth.status_code, 401)
+
+        with_auth = self.client.get(
+            f"/v1/responses/{created['id']}",
+            headers={"Authorization": "Bearer secret"},
+        )
+        self.assertEqual(with_auth.status_code, 200)
+
+
 if __name__ == "__main__":
     unittest.main()
