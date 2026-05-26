@@ -223,5 +223,36 @@ class BuildResponseTests(unittest.TestCase):
         self.assertEqual(payload["previous_response_id"], "resp_prior")
 
 
+import asyncio
+
+from simple_chatbot.responses import ResponseStore
+
+
+class ResponseStoreTests(unittest.TestCase):
+    def test_put_then_get(self):
+        entry = {
+            "response_id": "resp_1",
+            "previous_response_id": None,
+            "session_messages": [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "ok"}],
+            "response_json": {"id": "resp_1"},
+            "conversation_id": "conv_1",
+        }
+
+        async def scenario():
+            store = ResponseStore()
+            await store.put("resp_1", entry)
+            return await store.get("resp_1")
+
+        got = asyncio.run(scenario())
+        self.assertEqual(got, entry)
+
+    def test_get_missing_returns_none(self):
+        async def scenario():
+            store = ResponseStore()
+            return await store.get("nope")
+
+        self.assertIsNone(asyncio.run(scenario()))
+
+
 if __name__ == "__main__":
     unittest.main()

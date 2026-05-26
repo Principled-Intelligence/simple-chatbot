@@ -23,6 +23,7 @@ Planned additions (Tasks 5-7):
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 
@@ -189,3 +190,23 @@ def build_response(
     # Non-standard extension we add at the envelope level (same as chat completions).
     payload["conversation_id"] = conversation_id
     return payload
+
+
+class ResponseStore:
+    """In-memory mapping of response_id -> stored Response entry.
+
+    Process-local; resets on server restart. Acceptable for the evaluator
+    integration which drives all chained turns within a single server lifetime.
+    """
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._entries: dict[str, dict] = {}
+
+    async def put(self, response_id: str, entry: dict) -> None:
+        async with self._lock:
+            self._entries[response_id] = entry
+
+    async def get(self, response_id: str) -> dict | None:
+        async with self._lock:
+            return self._entries.get(response_id)
