@@ -175,6 +175,59 @@ class BuildOutputItemsTests(unittest.TestCase):
         # Message item id should start with `msg_`
         self.assertTrue(ids[0].startswith("msg_"))
 
+    def test_guard_blocked_turn_outputs_message_only(self):
+        # Guard-blocked turns have no tool_messages; just the refusal text.
+        result = ChatResult(
+            content="I can't help with that.",
+            retrieved_chunks=[],
+            tool_messages=[],
+            blocked_by_guard=True,
+        )
+        items = build_output_items(result)
+        self.assertEqual([it["type"] for it in items], ["message"])
+        self.assertEqual(items[0]["content"][0]["text"], "I can't help with that.")
+
+    def test_empty_knowledge_base_outputs_message_only(self):
+        # Empty KB short-circuits with a plain message and no tool_messages.
+        result = ChatResult(
+            content="I don't have any indexed documents to search yet.",
+            retrieved_chunks=[],
+            tool_messages=[],
+        )
+        items = build_output_items(result)
+        self.assertEqual([it["type"] for it in items], ["message"])
+
+    def test_max_rounds_reached_preserves_all_tool_calls(self):
+        # Max-rounds-reached: every round's calls are in tool_messages; the
+        # forced-final assistant text is in `content`. Mapping should produce
+        # all function_call/function_call_output pairs in order, then the
+        # final message item.
+        tool_messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "name": "search_documents", "content": "R1"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c2", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c2", "name": "search_documents", "content": "R2"},
+        ]
+        result = ChatResult(
+            content="forced final",
+            retrieved_chunks=[],
+            tool_messages=tool_messages,
+        )
+        items = build_output_items(result)
+        types = [it["type"] for it in items]
+        self.assertEqual(types, ["function_call", "function_call_output", "function_call", "function_call_output", "message"])
+        self.assertEqual(items[-1]["content"][0]["text"], "forced final")
+
 
 from simple_chatbot.responses import build_response
 

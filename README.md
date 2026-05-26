@@ -29,7 +29,7 @@ models or retrieval settings without adopting a production platform.
 | --- | --- |
 | Python | `>=3.12` |
 | Server URL | `http://127.0.0.1:8000` |
-| API routes | `GET /v1/models`, `POST /v1/chat/completions` |
+| API routes | `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, `GET /v1/responses/{id}` |
 | Chat model | `openai/gpt-5.4-nano` |
 | Embedding model | `openai/text-embedding-3-small` |
 | Documents | `.txt`, `.md`, `.pdf`, `.docx` |

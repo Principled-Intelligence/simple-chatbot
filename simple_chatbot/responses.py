@@ -1,24 +1,15 @@
-"""Responses API support: input normalization, output-item mapping, and a small
-in-memory store for `previous_response_id` chaining.
+"""Responses API adapter.
 
-This module is intentionally separate from `agent.py` so the agent remains
-focused on the chat-completions-shaped tool loop. The Responses adapter calls
-the agent unchanged and translates the result.
+Bridges the existing agent (which speaks chat-completions shape) to OpenAI's
+Responses API wire format:
 
-Current contents:
-  - InvalidInputError: raised when a Responses API `input` value can't be normalized.
-  - normalize_input: converts the request `input` field (string or list of input
-    items) into the chat-completions messages list the Agent expects.
-
-Planned additions (Tasks 5-7):
-  - Output-item mapping: translates chat-completions assistant messages and tool
-    calls into Responses API output items (message, function_call,
-    function_call_output, etc.).
-  - build_response: assembles a full Responses API response object from the
-    agent's final messages and usage metadata.
-  - ResponseStore: a small in-memory store that maps response IDs to their
-    message histories, enabling `previous_response_id` chaining so callers can
-    resume conversations without re-sending the full history.
+- `normalize_input`: convert a Responses API `input` field (string or list of
+  message items) into chat-completions messages.
+- `build_output_items` / `build_response`: convert a `ChatResult` into the
+  ordered output array and the full Response payload, using the openai SDK's
+  typed schemas.
+- `ResponseStore`: in-memory mapping of response_id -> stored entry, used for
+  `previous_response_id` chaining. Process-local; resets on server restart.
 """
 
 from __future__ import annotations

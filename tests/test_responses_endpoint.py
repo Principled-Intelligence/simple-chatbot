@@ -205,6 +205,32 @@ class ResponsesChainTests(ResponsesEndpointTests):
         detail = response.json()["detail"]["error"]
         self.assertEqual(detail["param"], "input")
 
+    def test_three_turn_chain_preserves_full_history(self):
+        first = self.client.post("/v1/responses", json={"input": "turn 1"}).json()
+        second = self.client.post(
+            "/v1/responses",
+            json={"input": "turn 2", "previous_response_id": first["id"]},
+        ).json()
+        third = self.client.post(
+            "/v1/responses",
+            json={"input": "turn 3", "previous_response_id": second["id"]},
+        )
+        self.assertEqual(third.status_code, 200, third.text)
+        third_body = third.json()
+        # All three turns share the same conversation_id
+        self.assertEqual(third_body["conversation_id"], first["conversation_id"])
+        self.assertEqual(third_body["conversation_id"], second["conversation_id"])
+
+        # Turn 3's agent input should contain all three prior turns in order.
+        turn3_messages = self.agent.calls[-1]
+        # First six entries: alternating user/assistant for turns 1 and 2,
+        # then the new turn-3 user input.
+        self.assertEqual(turn3_messages[0], {"role": "user", "content": "turn 1"})
+        self.assertEqual(turn3_messages[1], {"role": "assistant", "content": "ok"})
+        self.assertEqual(turn3_messages[2], {"role": "user", "content": "turn 2"})
+        self.assertEqual(turn3_messages[3], {"role": "assistant", "content": "ok"})
+        self.assertEqual(turn3_messages[-1], {"role": "user", "content": "turn 3"})
+
 
 class ResponsesRetrieveTests(ResponsesEndpointTests):
     def test_get_returns_stored_response(self):
