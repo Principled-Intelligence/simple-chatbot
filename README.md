@@ -280,6 +280,54 @@ python smoke_test.py --base-url http://localhost:8000 --message "hi"
 
 </details>
 
+### Responses API
+
+In addition to `/v1/chat/completions`, the server exposes
+`POST /v1/responses` and `GET /v1/responses/{id}` implementing OpenAI's
+Responses API wire format. Every tool call and tool result appears in the
+response's `output` array, in the order it happened, so downstream evaluators
+can inspect the full trace.
+
+**Single turn:**
+
+```bash
+curl -X POST http://localhost:8000/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{"input": "What does the doc say about onboarding?"}'
+```
+
+Response (abbreviated):
+
+```json
+{
+  "id": "resp_...",
+  "object": "response",
+  "status": "completed",
+  "output": [
+    {"type": "function_call", "call_id": "call_1", "name": "search_documents", "arguments": "{\"query\": \"onboarding\"}"},
+    {"type": "function_call_output", "call_id": "call_1", "output": "..."},
+    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "...", "annotations": []}]}
+  ],
+  "usage": {"input_tokens": 123, "output_tokens": 45, "total_tokens": 168}
+}
+```
+
+**Multi-turn:** Pass the prior response's `id` as `previous_response_id`. Only
+new input items are needed; the server reconstructs prior context:
+
+```bash
+curl -X POST http://localhost:8000/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{"input": "tell me more", "previous_response_id": "resp_..."}'
+```
+
+**Notes:**
+- `tools` and `tool_choice` in the request are accepted but ignored — the
+  server always exposes its built-in `search_documents` tool.
+- Streaming (`stream: true`) is not supported.
+- Response state is stored in-memory; `previous_response_id` chains do not
+  survive a server restart.
+
 ## How It Works
 
 ```text

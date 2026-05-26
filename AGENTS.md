@@ -7,8 +7,9 @@
 Primary modules:
 
 - `simple_chatbot/cli.py`: Typer CLI and runtime configuration.
-- `simple_chatbot/server.py`: FastAPI `/v1/models` and `/v1/chat/completions` endpoints.
+- `simple_chatbot/server.py`: FastAPI `/v1/models`, `/v1/chat/completions`, and `/v1/responses` endpoints.
 - `simple_chatbot/agent.py`: Agentic chat loop and `search_documents` tool handling.
+- `simple_chatbot/responses.py`: Responses API request parsing, output-item mapping, and in-memory response store.
 - `simple_chatbot/indexer.py`: ChromaDB persistence, embedding, and search.
 - `simple_chatbot/loader.py`: Document loading and chunking.
 - `simple_chatbot/guard.py`: Optional ScopeGuard gate.
