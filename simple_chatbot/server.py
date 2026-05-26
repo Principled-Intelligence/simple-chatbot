@@ -235,14 +235,43 @@ async def responses_create(request: Request, body: ResponsesRequest):
             detail=_openai_error(str(exc), "invalid_request_error", "input"),
         ) from exc
 
-    # Single-turn path — chain handling lands in Task 10.
-    messages = new_messages
+    prior_entry = None
+    if body.previous_response_id:
+        prior_entry = await _response_store.get(body.previous_response_id)
+        if prior_entry is None:
+            raise HTTPException(
+                status_code=404,
+                detail=_openai_error(
+                    f"previous_response_id {body.previous_response_id!r} not found",
+                    "invalid_request_error",
+                    "previous_response_id",
+                ),
+            )
+        raw_input = body.input
+        input_is_empty = (
+            (isinstance(raw_input, str) and not raw_input)
+            or (isinstance(raw_input, list) and len(raw_input) == 0)
+        )
+        if input_is_empty:
+            raise HTTPException(
+                status_code=400,
+                detail=_openai_error(
+                    "input must contain at least one item when previous_response_id is set",
+                    "invalid_request_error",
+                    "input",
+                ),
+            )
 
-    conversation_id = (
-        body.user
-        or request.headers.get("x-conversation-id")
-        or derive_conversation_id(messages)
-    )
+    if prior_entry is not None:
+        messages = list(prior_entry["session_messages"]) + new_messages
+        conversation_id = prior_entry["conversation_id"]
+    else:
+        messages = new_messages
+        conversation_id = (
+            body.user
+            or request.headers.get("x-conversation-id")
+            or derive_conversation_id(messages)
+        )
 
     with logger.contextualize(conversation_id=conversation_id):
         logger.bind(

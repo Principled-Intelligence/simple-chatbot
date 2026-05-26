@@ -157,5 +157,54 @@ class ResponsesEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
 
 
+class ResponsesChainTests(ResponsesEndpointTests):
+    def test_chained_turn_prepends_prior_session_messages(self):
+        first = self.client.post("/v1/responses", json={"input": "hi"})
+        self.assertEqual(first.status_code, 200)
+        first_body = first.json()
+        first_id = first_body["id"]
+        first_conv = first_body["conversation_id"]
+
+        # Snapshot the messages the agent saw on turn 1
+        turn1_messages = list(self.agent.calls[-1])
+
+        second = self.client.post(
+            "/v1/responses",
+            json={"input": "follow-up", "previous_response_id": first_id},
+        )
+        self.assertEqual(second.status_code, 200, second.text)
+        second_body = second.json()
+        self.assertEqual(second_body["previous_response_id"], first_id)
+        # Chained turn inherits the conversation_id
+        self.assertEqual(second_body["conversation_id"], first_conv)
+
+        # Turn 2's messages: prior session_messages + new user input
+        turn2_messages = self.agent.calls[-1]
+        # Should start with the prior turn's user + assistant
+        self.assertEqual(turn2_messages[0], {"role": "user", "content": "hi"})
+        self.assertEqual(turn2_messages[1], {"role": "assistant", "content": "ok"})
+        # Then the new user input
+        self.assertEqual(turn2_messages[-1], {"role": "user", "content": "follow-up"})
+
+    def test_unknown_previous_response_id_returns_404(self):
+        response = self.client.post(
+            "/v1/responses",
+            json={"input": "x", "previous_response_id": "resp_does_not_exist"},
+        )
+        self.assertEqual(response.status_code, 404)
+        detail = response.json()["detail"]["error"]
+        self.assertEqual(detail["param"], "previous_response_id")
+
+    def test_previous_response_id_with_empty_input_returns_400(self):
+        first = self.client.post("/v1/responses", json={"input": "hi"}).json()
+        response = self.client.post(
+            "/v1/responses",
+            json={"input": "", "previous_response_id": first["id"]},
+        )
+        self.assertEqual(response.status_code, 400)
+        detail = response.json()["detail"]["error"]
+        self.assertEqual(detail["param"], "input")
+
+
 if __name__ == "__main__":
     unittest.main()
