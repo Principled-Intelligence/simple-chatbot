@@ -79,7 +79,7 @@ class ChatCompletionRequest(BaseModel):
     user: str | None = None
 
 
-def _require_chat_auth(request: Request) -> None:
+def _require_auth(request: Request) -> None:
     api_key = _config.api_key if _config else None
     if not api_key:
         return
@@ -97,7 +97,7 @@ def _require_chat_auth(request: Request) -> None:
     if any(hmac.compare_digest(key, api_key) for key in supplied_keys):
         return
 
-    logger.bind(path="/v1/chat/completions").warning("Rejected unauthorized request")
+    logger.bind(path=request.url.path).warning("Rejected unauthorized request")
     raise HTTPException(
         status_code=401,
         detail="Invalid or missing API key",
@@ -128,7 +128,7 @@ def list_models():
 
 @app.post("/v1/chat/completions")
 async def chat_completions(request: Request, body: ChatCompletionRequest):
-    _require_chat_auth(request)
+    _require_auth(request)
 
     if body.stream:
         logger.bind(stream=body.stream).warning("Rejected streaming chat completion request")
