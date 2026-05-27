@@ -148,6 +148,7 @@ behavior:
 | Change chunking | `uv run simple-chatbot serve --docs-dir ./docs --chunk-size 800 --chunk-overlap 100` |
 | Run on another port | `uv run simple-chatbot serve --docs-dir ./docs --port 15077` |
 | Require API auth | `uv run simple-chatbot serve --docs-dir ./docs --api-key "dev-secret"` |
+| Run offline (no API keys) | `SIMPLE_CHATBOT_SCRIPTED_LLM=1 uv run simple-chatbot serve --docs-dir /tmp/empty` |
 
 By default, the API binds to `127.0.0.1` and does not require a key. If you bind
 to a network interface such as `--host 0.0.0.0`, set `--api-key` or
@@ -327,6 +328,14 @@ curl -X POST http://localhost:8000/v1/responses \
 - Streaming (`stream: true`) is not supported.
 - Response state is stored in-memory; `previous_response_id` chains do not
   survive a server restart.
+
+**Offline testing:** Set `SIMPLE_CHATBOT_SCRIPTED_LLM=1` before starting the server
+to skip every external call. A canned search tool returns a query-echoing fake
+document and a canned LLM returns a final answer that includes the search result,
+so a `POST /v1/responses` request produces a complete `[function_call,
+function_call_output, message]` trace without touching the LLM or embedding APIs.
+No `--docs-dir` content is read in this mode (the flag is still required for
+CLI compatibility, but a non-existent or empty path works).
 
 ## How It Works
 
