@@ -57,52 +57,62 @@ class _ScriptedResponse:
     usage: _ScriptedUsage = field(default_factory=_ScriptedUsage)
 
 
+def _extract_user_text(content) -> str:
+    """Extract a plain string query from a chat-completions user `content`.
+
+    Accepts either a plain string or a content-parts list (OpenAI's input
+    content shape). Returns the first text-bearing part as a string.
+    """
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict) and part.get("text"):
+                return str(part["text"])
+        return ""
+    return str(content)
+
+
 async def acompletion(*, messages: list[dict], **kwargs) -> _ScriptedResponse:
     """LiteLLM-compatible scripted completion for offline testing.
 
-    Dispatches on the last message's role:
-    - user        -> emit a search_documents tool_calls response with user text as query
-    - tool        -> emit a final assistant text echoing the tool result
-    - otherwise   -> emit a generic 'ok' stop response
+    Walks `messages` from the end backwards and dispatches on the most recent
+    user or tool message. This handles:
+    - initial calls (last is user) -> emit search tool_call
+    - post-tool calls (last is tool) -> emit final echo answer
+    - multi-message inputs ending in assistant -> still finds the prior user
+    - chained turns of any depth, where prior session_messages may interleave
+      user/assistant/tool roles before the new user input
+
+    Falls back to a generic "ok" stop response only if no user or tool
+    message is present anywhere in the list.
     """
-    last = messages[-1] if messages else {}
-    role = last.get("role")
-
-    if role == "user":
-        # extract a string from the user content (may be a list of parts)
-        content = last.get("content", "")
-        if isinstance(content, list):
-            # take the first input_text-ish part if available
-            for part in content:
-                if isinstance(part, dict) and part.get("text"):
-                    content = part["text"]
-                    break
-            else:
-                content = ""
-        query = str(content)
-        call_id = f"call_scripted_{uuid.uuid4().hex}"
-        message = _ScriptedMessage(
-            content=None,
-            tool_calls=[
-                _ScriptedToolCall(
-                    id=call_id,
-                    function=_ScriptedToolCallFunction(
-                        name="search_documents",
-                        arguments=json.dumps({"query": query}),
-                    ),
-                )
-            ],
-        )
-        return _ScriptedResponse(
-            choices=[_ScriptedChoice(message=message, finish_reason="tool_calls")],
-        )
-
-    if role == "tool":
-        tool_content = str(last.get("content", ""))
-        message = _ScriptedMessage(content=f"Scripted answer based on search result: {tool_content}")
-        return _ScriptedResponse(
-            choices=[_ScriptedChoice(message=message, finish_reason="stop")],
-        )
+    for msg in reversed(messages):
+        role = msg.get("role")
+        if role == "tool":
+            tool_content = str(msg.get("content", ""))
+            message = _ScriptedMessage(
+                content=f"Scripted answer based on search result: {tool_content}",
+            )
+            return _ScriptedResponse(
+                choices=[_ScriptedChoice(message=message, finish_reason="stop")],
+            )
+        if role == "user":
+            query = _extract_user_text(msg.get("content", ""))
+            call_id = f"call_scripted_{uuid.uuid4().hex}"
+            message = _ScriptedMessage(
+                content=None,
+                tool_calls=[
+                    _ScriptedToolCall(
+                        id=call_id,
+                        function=_ScriptedToolCallFunction(
+                            name="search_documents",
+                            arguments=json.dumps({"query": query}),
+                        ),
+                    )
+                ],
+            )
+            return _ScriptedResponse(
+                choices=[_ScriptedChoice(message=message, finish_reason="tool_calls")],
+            )
 
     message = _ScriptedMessage(content="ok")
     return _ScriptedResponse(

@@ -45,6 +45,62 @@ class ScriptedAcompletionTests(unittest.TestCase):
         self.assertEqual(resp.choices[0].finish_reason, "stop")
         self.assertEqual(resp.choices[0].message.content, "ok")
 
+    def test_dispatch_uses_most_recent_user_when_list_ends_with_assistant(self):
+        # Client sends a multi-message list ending in assistant.
+        # Should still emit a tool_call using the most recent user message.
+        resp = asyncio.run(scripted_acompletion(
+            messages=[
+                {"role": "user", "content": "first user"},
+                {"role": "assistant", "content": "earlier assistant reply"},
+            ],
+        ))
+        choice = resp.choices[0]
+        self.assertEqual(choice.finish_reason, "tool_calls")
+        tc = choice.message.tool_calls[0]
+        self.assertEqual(tc.function.name, "search_documents")
+        self.assertIn("first user", tc.function.arguments)
+
+    def test_dispatch_picks_latest_user_when_multiple_user_messages(self):
+        resp = asyncio.run(scripted_acompletion(
+            messages=[
+                {"role": "user", "content": "older user msg"},
+                {"role": "assistant", "content": "older reply"},
+                {"role": "user", "content": "latest user msg"},
+            ],
+        ))
+        tc = resp.choices[0].message.tool_calls[0]
+        self.assertIn("latest user msg", tc.function.arguments)
+        self.assertNotIn("older user msg", tc.function.arguments)
+
+    def test_dispatch_prefers_tool_over_earlier_user(self):
+        # When the list is [user, assistant_with_tc, tool], the tool is the
+        # most recent dispatchable message — we should emit the final answer
+        # rather than starting a new search.
+        resp = asyncio.run(scripted_acompletion(
+            messages=[
+                {"role": "user", "content": "original question"},
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "x"}]},
+                {"role": "tool", "tool_call_id": "x", "name": "search_documents", "content": "TOOL RESULT"},
+            ],
+        ))
+        choice = resp.choices[0]
+        self.assertEqual(choice.finish_reason, "stop")
+        self.assertIn("TOOL RESULT", choice.message.content)
+
+    def test_dispatch_falls_back_when_no_user_or_tool(self):
+        # No user, no tool — only assistant. Should still produce a valid
+        # stop response with content "ok" rather than crashing.
+        resp = asyncio.run(scripted_acompletion(
+            messages=[{"role": "assistant", "content": "lonely assistant"}],
+        ))
+        self.assertEqual(resp.choices[0].finish_reason, "stop")
+        self.assertEqual(resp.choices[0].message.content, "ok")
+
+    def test_dispatch_falls_back_when_messages_empty(self):
+        resp = asyncio.run(scripted_acompletion(messages=[]))
+        self.assertEqual(resp.choices[0].finish_reason, "stop")
+        self.assertEqual(resp.choices[0].message.content, "ok")
+
 
 class ScriptedIndexerTests(unittest.TestCase):
     def test_search_echoes_query(self):
