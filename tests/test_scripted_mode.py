@@ -103,40 +103,29 @@ class ScriptedAcompletionTests(unittest.TestCase):
         self.assertEqual(resp.choices[0].finish_reason, "stop")
         self.assertEqual(resp.choices[0].message.content, "ok")
 
-    def test_subsequent_user_after_tool_skips_new_search(self):
-        # Thread already shows a completed search round; new user input
-        # should be answered directly with no tool_call.
+    def test_subsequent_user_still_dispatches_through_heuristic(self):
+        # Multi-tool harness: a follow-up user message after a prior tool
+        # round must still be routed through tool-selection heuristics rather
+        # than collapsing to a "direct answer" — different turns may need
+        # different tools.
         resp = asyncio.run(scripted_acompletion(
             messages=[
-                {"role": "user", "content": "turn 1"},
+                {"role": "user", "content": "calculate 2+2"},
                 {"role": "assistant", "content": None, "tool_calls": [{"id": "x"}]},
-                {"role": "tool", "tool_call_id": "x", "name": "search_documents", "content": "RESULT"},
+                {"role": "tool", "tool_call_id": "x", "name": "calculate", "content": "= 4"},
                 {"role": "assistant", "content": "earlier scripted answer"},
-                {"role": "user", "content": "turn 2"},
+                {"role": "user", "content": "lookup user fred"},
             ],
         ))
         choice = resp.choices[0]
-        self.assertEqual(choice.finish_reason, "stop")
-        self.assertEqual(choice.message.tool_calls, [])
-        self.assertIn("turn 2", choice.message.content)
-
-    def test_assistant_with_tool_calls_in_history_also_skips_new_search(self):
-        # Even if there is no explicit `tool` message yet, an earlier
-        # assistant message with tool_calls counts as prior tool activity.
-        resp = asyncio.run(scripted_acompletion(
-            messages=[
-                {"role": "user", "content": "earlier user"},
-                {"role": "assistant", "content": None, "tool_calls": [{"id": "y"}]},
-                {"role": "user", "content": "new user"},
-            ],
-        ))
-        self.assertEqual(resp.choices[0].finish_reason, "stop")
-        self.assertEqual(resp.choices[0].message.tool_calls, [])
+        self.assertEqual(choice.finish_reason, "tool_calls")
+        self.assertEqual(len(choice.message.tool_calls), 1)
+        self.assertEqual(choice.message.tool_calls[0].function.name, "lookup_user")
+        self.assertIn("fred", choice.message.tool_calls[0].function.arguments)
 
     def test_user_after_plain_assistant_still_emits_tool_call(self):
-        # An earlier assistant message that did NOT call a tool is not
-        # prior tool activity. Latest user input should still trigger a
-        # new search.
+        # Pre-existing assistant message with no tool_calls: latest user input
+        # still triggers a tool call as usual.
         resp = asyncio.run(scripted_acompletion(
             messages=[
                 {"role": "user", "content": "older"},
@@ -185,10 +174,12 @@ class ScriptedModeIntegrationTests(unittest.TestCase):
 
 
 class ScriptedModeChainedTurnTests(unittest.TestCase):
-    def test_chained_turn_skips_redundant_search(self):
+    def test_chained_turn_still_dispatches_through_heuristic(self):
         # Drive a fake "chain" at the Agent level: pass turn 1's
-        # final_messages plus a new user turn as turn 2's input. The
-        # scripted policy should answer directly without a second search.
+        # final_messages plus a new user turn as turn 2's input. Turn 2 must
+        # go through the normal tool-selection heuristic; the harness exposes
+        # multiple distinct tools, so chained turns may legitimately need to
+        # call a different tool than the prior turn.
         with TemporaryDirectory() as tmp:
             agent = Agent(
                 _config(tmp),
@@ -200,17 +191,20 @@ class ScriptedModeChainedTurnTests(unittest.TestCase):
                 [m["role"] for m in turn1.tool_messages],
                 ["assistant", "tool"],
             )
-            self.assertIn("Scripted answer", turn1.content)
 
-            # Simulate the server's chain prefix-prepending behavior
-            turn2_input = list(turn1.final_messages) + [{"role": "user", "content": "follow up"}]
+            turn2_input = list(turn1.final_messages) + [
+                {"role": "user", "content": "lookup user alice"},
+            ]
             turn2 = asyncio.run(agent.chat(turn2_input))
 
-            self.assertEqual(turn2.tool_messages, [])
+            # Turn 2 must have its own tool round
             self.assertEqual(
-                turn2.content,
-                "Scripted direct answer (no new search) for: 'follow up'",
+                [m["role"] for m in turn2.tool_messages],
+                ["assistant", "tool"],
             )
+            tool_call = turn2.tool_messages[0]["tool_calls"][0]
+            self.assertEqual(tool_call["function"]["name"], "lookup_user")
+            self.assertIn("alice", tool_call["function"]["arguments"])
 
 
 class MarkerDispatchTests(unittest.TestCase):
@@ -243,8 +237,8 @@ class MarkerDispatchTests(unittest.TestCase):
         ))
         self.assertIsNotNone(resp.choices[0].message.reasoning_content)
 
-    def test_markers_override_chained_turn_no_tool_call(self):
-        # Chain: prior search activity present, but [parallel] marker forces tool calls.
+    def test_parallel_marker_works_on_chained_turn(self):
+        # Follow-up turn with [parallel] should still produce >=2 tool calls.
         resp = asyncio.run(scripted_acompletion(
             messages=[
                 {"role": "user", "content": "first"},

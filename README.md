@@ -358,9 +358,10 @@ Use explicit markers in the user input to force specific trace shapes:
 | `[multi-round]` | Two sequential tool rounds before answering → `[fc, fco, fc, fco, message]`   |
 | `[error]`       | First tool call has malformed JSON arguments → exercises the agent's error path |
 
-Markers override the default chained-turn behavior (which suppresses tool calls
-on follow-up turns once a search already happened). Use them whenever you need
-deterministic fixtures.
+Every user turn is routed through tool-selection heuristics — there is no
+"chained-turn suppression" in the mock. Follow-up turns can pick different
+tools than the prior turn, which is how you'd want a real agent to behave
+across a multi-step conversation.
 
 Examples:
 

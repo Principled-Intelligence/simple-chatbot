@@ -267,33 +267,6 @@ def _collect_tool_outputs_since_latest_user(messages: list[dict]) -> list[str]:
     return outputs
 
 
-def _has_prior_tool_activity(messages: list[dict]) -> bool:
-    """True if any earlier message represents a completed search round."""
-    for m in messages:
-        role = m.get("role")
-        if role == "tool":
-            return True
-        if role == "assistant" and m.get("tool_calls"):
-            return True
-    return False
-
-
-def _direct_answer_response(user_content) -> _ScriptedResponse:
-    """Direct answer used when the thread already contains a prior search.
-
-    The mock policy is "tool invocation only on the first message"; chained
-    turns get a canned direct response that still echoes the user input so
-    the trace is observable.
-    """
-    text = _extract_user_text(user_content)
-    message = _ScriptedMessage(
-        content=f"Scripted direct answer (no new search) for: {text!r}",
-    )
-    return _ScriptedResponse(
-        choices=[_ScriptedChoice(message=message, finish_reason="stop")],
-    )
-
-
 def _fallback_response() -> _ScriptedResponse:
     message = _ScriptedMessage(content="ok")
     return _ScriptedResponse(
@@ -358,10 +331,6 @@ async def acompletion(*, messages: list[dict], **kwargs) -> _ScriptedResponse:
             )
 
         if role == "user":
-            # Markers override chained-turn heuristic
-            if not markers.any_explicit and _has_prior_tool_activity(messages[:idx]):
-                return _direct_answer_response(msg.get("content", ""))
-
             tools = _pick_tools(cleaned_text)
             if markers.parallel and len(tools) < 2:
                 # Force parallelism by appending an extra tool
