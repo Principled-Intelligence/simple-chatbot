@@ -111,7 +111,7 @@ def _parse_markers(text: str) -> tuple[_Markers, str]:
 # Tool selection heuristics
 # ---------------------------------------------------------------------------
 
-_CALC_KEYWORDS = re.compile(r"\b(calculat|comput|math)\b", re.IGNORECASE)
+_CALC_KEYWORDS = re.compile(r"\b(calculat\w*|comput\w*|math)\b", re.IGNORECASE)
 _CALC_OPERATOR = re.compile(r"\d\s*[\+\-\*/=]\s*\d")
 _TIME_KEYWORDS = re.compile(r"\btime\b", re.IGNORECASE)
 _USER_KEYWORDS = re.compile(r"\b(lookup|user_id)\b", re.IGNORECASE)

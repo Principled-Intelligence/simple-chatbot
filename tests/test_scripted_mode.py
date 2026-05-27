@@ -266,6 +266,14 @@ class HeuristicToolSelectionTests(unittest.TestCase):
         self.assertEqual(tc.function.name, "calculate")
         self.assertIn("2+2", tc.function.arguments)
 
+    def test_calculate_without_operator_still_picks_calculate(self):
+        # Regression: 'calculate' (inflected) must match even without digits/operators.
+        resp = asyncio.run(scripted_acompletion(
+            messages=[{"role": "user", "content": "please calculate the cost of doing nothing"}],
+        ))
+        tc = resp.choices[0].message.tool_calls[0]
+        self.assertEqual(tc.function.name, "calculate")
+
     def test_time_keyword_picks_time_tool(self):
         resp = asyncio.run(scripted_acompletion(
             messages=[{"role": "user", "content": "what time is it"}],
