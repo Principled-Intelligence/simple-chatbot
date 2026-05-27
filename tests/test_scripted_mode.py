@@ -101,6 +101,52 @@ class ScriptedAcompletionTests(unittest.TestCase):
         self.assertEqual(resp.choices[0].finish_reason, "stop")
         self.assertEqual(resp.choices[0].message.content, "ok")
 
+    def test_subsequent_user_after_tool_skips_new_search(self):
+        # Thread already shows a completed search round; new user input
+        # should be answered directly with no tool_call.
+        resp = asyncio.run(scripted_acompletion(
+            messages=[
+                {"role": "user", "content": "turn 1"},
+                {"role": "assistant", "content": None, "tool_calls": [{"id": "x"}]},
+                {"role": "tool", "tool_call_id": "x", "name": "search_documents", "content": "RESULT"},
+                {"role": "assistant", "content": "earlier scripted answer"},
+                {"role": "user", "content": "turn 2"},
+            ],
+        ))
+        choice = resp.choices[0]
+        self.assertEqual(choice.finish_reason, "stop")
+        self.assertEqual(choice.message.tool_calls, [])
+        self.assertIn("turn 2", choice.message.content)
+
+    def test_assistant_with_tool_calls_in_history_also_skips_new_search(self):
+        # Even if there is no explicit `tool` message yet, an earlier
+        # assistant message with tool_calls counts as prior tool activity.
+        resp = asyncio.run(scripted_acompletion(
+            messages=[
+                {"role": "user", "content": "earlier user"},
+                {"role": "assistant", "content": None, "tool_calls": [{"id": "y"}]},
+                {"role": "user", "content": "new user"},
+            ],
+        ))
+        self.assertEqual(resp.choices[0].finish_reason, "stop")
+        self.assertEqual(resp.choices[0].message.tool_calls, [])
+
+    def test_user_after_plain_assistant_still_emits_tool_call(self):
+        # An earlier assistant message that did NOT call a tool is not
+        # prior tool activity. Latest user input should still trigger a
+        # new search.
+        resp = asyncio.run(scripted_acompletion(
+            messages=[
+                {"role": "user", "content": "older"},
+                {"role": "assistant", "content": "plain reply, no tool"},
+                {"role": "user", "content": "latest"},
+            ],
+        ))
+        choice = resp.choices[0]
+        self.assertEqual(choice.finish_reason, "tool_calls")
+        tc = choice.message.tool_calls[0]
+        self.assertIn("latest", tc.function.arguments)
+
 
 class ScriptedIndexerTests(unittest.TestCase):
     def test_search_echoes_query(self):
@@ -133,6 +179,35 @@ class ScriptedModeIntegrationTests(unittest.TestCase):
             self.assertEqual(
                 assistant_msg["tool_calls"][0]["function"]["name"],
                 "search_documents",
+            )
+
+
+class ScriptedModeChainedTurnTests(unittest.TestCase):
+    def test_chained_turn_skips_redundant_search(self):
+        # Drive a fake "chain" at the Agent level: pass turn 1's
+        # final_messages plus a new user turn as turn 2's input. The
+        # scripted policy should answer directly without a second search.
+        with TemporaryDirectory() as tmp:
+            agent = Agent(
+                _config(tmp),
+                ScriptedIndexer(),
+                acompletion=scripted_acompletion,
+            )
+            turn1 = asyncio.run(agent.chat([{"role": "user", "content": "what?"}]))
+            self.assertEqual(
+                [m["role"] for m in turn1.tool_messages],
+                ["assistant", "tool"],
+            )
+            self.assertTrue(turn1.content.startswith("Scripted answer based on search result:"))
+
+            # Simulate the server's chain prefix-prepending behavior
+            turn2_input = list(turn1.final_messages) + [{"role": "user", "content": "follow up"}]
+            turn2 = asyncio.run(agent.chat(turn2_input))
+
+            self.assertEqual(turn2.tool_messages, [])
+            self.assertEqual(
+                turn2.content,
+                "Scripted direct answer (no new search) for: 'follow up'",
             )
 
 

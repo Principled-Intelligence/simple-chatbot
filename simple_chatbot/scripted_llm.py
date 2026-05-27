@@ -74,46 +74,88 @@ def _extract_user_text(content) -> str:
 async def acompletion(*, messages: list[dict], **kwargs) -> _ScriptedResponse:
     """LiteLLM-compatible scripted completion for offline testing.
 
-    Walks `messages` from the end backwards and dispatches on the most recent
-    user or tool message. This handles:
-    - initial calls (last is user) -> emit search tool_call
-    - post-tool calls (last is tool) -> emit final echo answer
-    - multi-message inputs ending in assistant -> still finds the prior user
-    - chained turns of any depth, where prior session_messages may interleave
-      user/assistant/tool roles before the new user input
+    Walks `messages` from the end backwards. Dispatch rules:
+    - most recent message is a tool result -> emit final echo answer
+    - most recent message is a user input AND no prior tool activity is
+      present in the history -> emit a search_documents tool_call
+    - most recent message is a user input AND prior tool activity exists
+      -> emit a direct answer (no new tool_call) so chained turns don't
+      keep re-searching
+    - nothing dispatchable -> emit a generic stop response
 
-    Falls back to a generic "ok" stop response only if no user or tool
-    message is present anywhere in the list.
+    The "first message only" tool-call policy mimics how a real agent
+    behaves once it has search context already in its history.
     """
-    for msg in reversed(messages):
+    for idx in range(len(messages) - 1, -1, -1):
+        msg = messages[idx]
         role = msg.get("role")
         if role == "tool":
-            tool_content = str(msg.get("content", ""))
-            message = _ScriptedMessage(
-                content=f"Scripted answer based on search result: {tool_content}",
-            )
-            return _ScriptedResponse(
-                choices=[_ScriptedChoice(message=message, finish_reason="stop")],
-            )
+            return _final_echo_response(msg.get("content", ""))
         if role == "user":
-            query = _extract_user_text(msg.get("content", ""))
-            call_id = f"call_scripted_{uuid.uuid4().hex}"
-            message = _ScriptedMessage(
-                content=None,
-                tool_calls=[
-                    _ScriptedToolCall(
-                        id=call_id,
-                        function=_ScriptedToolCallFunction(
-                            name="search_documents",
-                            arguments=json.dumps({"query": query}),
-                        ),
-                    )
-                ],
-            )
-            return _ScriptedResponse(
-                choices=[_ScriptedChoice(message=message, finish_reason="tool_calls")],
-            )
+            if _has_prior_tool_activity(messages[:idx]):
+                return _direct_answer_response(msg.get("content", ""))
+            return _tool_call_response(msg.get("content", ""))
+    return _fallback_response()
 
+
+def _has_prior_tool_activity(messages: list[dict]) -> bool:
+    """True if any earlier message represents a completed search round."""
+    for m in messages:
+        role = m.get("role")
+        if role == "tool":
+            return True
+        if role == "assistant" and m.get("tool_calls"):
+            return True
+    return False
+
+
+def _tool_call_response(user_content) -> _ScriptedResponse:
+    query = _extract_user_text(user_content)
+    call_id = f"call_scripted_{uuid.uuid4().hex}"
+    message = _ScriptedMessage(
+        content=None,
+        tool_calls=[
+            _ScriptedToolCall(
+                id=call_id,
+                function=_ScriptedToolCallFunction(
+                    name="search_documents",
+                    arguments=json.dumps({"query": query}),
+                ),
+            )
+        ],
+    )
+    return _ScriptedResponse(
+        choices=[_ScriptedChoice(message=message, finish_reason="tool_calls")],
+    )
+
+
+def _final_echo_response(tool_content) -> _ScriptedResponse:
+    text = str(tool_content)
+    message = _ScriptedMessage(
+        content=f"Scripted answer based on search result: {text}",
+    )
+    return _ScriptedResponse(
+        choices=[_ScriptedChoice(message=message, finish_reason="stop")],
+    )
+
+
+def _direct_answer_response(user_content) -> _ScriptedResponse:
+    """Direct answer used when the thread already contains a prior search.
+
+    The mock policy is "tool invocation only on the first message"; chained
+    turns get a canned direct response that still echoes the user input so
+    the trace is observable.
+    """
+    text = _extract_user_text(user_content)
+    message = _ScriptedMessage(
+        content=f"Scripted direct answer (no new search) for: {text!r}",
+    )
+    return _ScriptedResponse(
+        choices=[_ScriptedChoice(message=message, finish_reason="stop")],
+    )
+
+
+def _fallback_response() -> _ScriptedResponse:
     message = _ScriptedMessage(content="ok")
     return _ScriptedResponse(
         choices=[_ScriptedChoice(message=message, finish_reason="stop")],
