@@ -97,5 +97,83 @@ class AgentRegistryTests(unittest.TestCase):
             self.assertEqual(list(agent._tool_by_name), ["custom_tool"])
 
 
+from simple_chatbot.tools import (
+    CALCULATE_TOOL_NAME,
+    GET_CURRENT_TIME_TOOL_NAME,
+    LOOKUP_USER_TOOL_NAME,
+    make_calculate_tool,
+    make_get_current_time_tool,
+    make_lookup_user_tool,
+    scripted_tools,
+)
+
+
+class CalculateToolTests(unittest.TestCase):
+    def test_echoes_expression_in_result(self):
+        tool = make_calculate_tool()
+        result = asyncio.run(tool.executor('{"expression": "2+2"}'))
+        self.assertIn("'2+2'", result.text)
+        self.assertIn("[scripted]", result.text)
+        self.assertEqual(result.chunks, [])
+
+    def test_rejects_missing_expression(self):
+        tool = make_calculate_tool()
+        result = asyncio.run(tool.executor('{}'))
+        self.assertIn("Tool error:", result.text)
+        self.assertIn("expression", result.text)
+
+    def test_rejects_invalid_json(self):
+        tool = make_calculate_tool()
+        result = asyncio.run(tool.executor('{not json'))
+        self.assertIn("Tool error:", result.text)
+
+
+class GetCurrentTimeToolTests(unittest.TestCase):
+    def test_no_tz_returns_canned_time(self):
+        tool = make_get_current_time_tool()
+        result = asyncio.run(tool.executor('{}'))
+        self.assertIn("current time:", result.text)
+
+    def test_with_tz_echoes_tz(self):
+        tool = make_get_current_time_tool()
+        result = asyncio.run(tool.executor('{"tz": "Europe/London"}'))
+        self.assertIn("Europe/London", result.text)
+
+    def test_rejects_non_string_tz(self):
+        tool = make_get_current_time_tool()
+        result = asyncio.run(tool.executor('{"tz": 123}'))
+        self.assertIn("Tool error:", result.text)
+
+
+class LookupUserToolTests(unittest.TestCase):
+    def test_echoes_user_id_into_record(self):
+        tool = make_lookup_user_tool()
+        result = asyncio.run(tool.executor('{"user_id": "alice"}'))
+        self.assertIn("alice", result.text)
+        self.assertIn("@example.test", result.text)
+
+    def test_rejects_missing_user_id(self):
+        tool = make_lookup_user_tool()
+        result = asyncio.run(tool.executor('{}'))
+        self.assertIn("Tool error:", result.text)
+        self.assertIn("user_id", result.text)
+
+
+class ScriptedToolsTests(unittest.TestCase):
+    def test_returns_four_tools_with_expected_names(self):
+        # Use the existing _FakeIndexer at the top of the file.
+        tools = scripted_tools(_FakeIndexer())
+        names = [t.name for t in tools]
+        self.assertEqual(
+            names,
+            [
+                SEARCH_TOOL_NAME,
+                CALCULATE_TOOL_NAME,
+                GET_CURRENT_TIME_TOOL_NAME,
+                LOOKUP_USER_TOOL_NAME,
+            ],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

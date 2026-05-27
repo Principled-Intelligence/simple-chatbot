@@ -172,9 +172,15 @@ def serve(
         )
         from simple_chatbot.scripted_indexer import ScriptedIndexer
         from simple_chatbot.scripted_llm import acompletion as scripted_acompletion
+        from simple_chatbot.tools import scripted_tools
 
         indexer = ScriptedIndexer()
-        init(config, indexer, acompletion=scripted_acompletion)
+        init(
+            config,
+            indexer,
+            acompletion=scripted_acompletion,
+            tools=scripted_tools(indexer),
+        )
     else:
         logger.bind(docs_dir=str(docs_dir)).info("Loading documents")
         docs = load_documents(config)
