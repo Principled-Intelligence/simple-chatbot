@@ -80,10 +80,12 @@ class Agent:
         config: SimpleChatbotConfig,
         indexer: Indexer,
         gate: ScopeGuardGate | None = None,
+        acompletion=None,  # NEW: defaults to litellm.acompletion
     ) -> None:
         self.config = config
         self.indexer = indexer
         self.gate = gate
+        self._acompletion = acompletion  # None means "use litellm.acompletion at call time"
         logger.bind(
             model=config.chat_model,
             max_tool_rounds=config.max_tool_rounds,
@@ -156,7 +158,7 @@ class Agent:
                 model=self.config.chat_model,
                 messages_in_context=len(working),
             ).info("Calling LLM")
-            response = await litellm.acompletion(**kwargs)
+            response = await (self._acompletion or litellm.acompletion)(**kwargs)
             choice = response.choices[0]
             assistant_msg = choice.message
 
@@ -250,7 +252,7 @@ class Agent:
             forced_response_kwargs["api_base"] = self.config.chat_api_base
 
         try:
-            final_response = await litellm.acompletion(**forced_response_kwargs)
+            final_response = await (self._acompletion or litellm.acompletion)(**forced_response_kwargs)
             final_usage = final_response.usage
             if final_usage:
                 usage_totals["prompt_tokens"] += getattr(final_usage, "prompt_tokens", 0) or 0

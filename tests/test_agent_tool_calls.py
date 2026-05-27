@@ -177,5 +177,26 @@ class AgentToolCallTests(unittest.TestCase):
             self.assertEqual(result.tool_messages, [])
 
 
+class AgentAcompletionInjectionTests(unittest.TestCase):
+    def test_injected_acompletion_is_used_instead_of_litellm(self):
+        with TemporaryDirectory() as tmp:
+            indexer = _FakeIndexer()
+            calls = []
+
+            async def fake_acompletion(**kwargs):
+                calls.append(kwargs)
+                return _Response(_Message(content="injected"), "stop")
+
+            agent = Agent(_config(tmp), indexer, acompletion=fake_acompletion)
+
+            with patch("simple_chatbot.agent.litellm.acompletion", new_callable=AsyncMock) as real_litellm:
+                result = asyncio.run(agent.chat([{"role": "user", "content": "hi"}]))
+
+            self.assertEqual(result.content, "injected")
+            self.assertEqual(len(calls), 1)
+            self.assertIn("messages", calls[0])
+            real_litellm.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

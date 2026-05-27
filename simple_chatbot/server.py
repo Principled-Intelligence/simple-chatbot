@@ -10,7 +10,6 @@ from simple_chatbot.agent import Agent
 from simple_chatbot.config import SimpleChatbotConfig
 from simple_chatbot.conversation_logger import ConversationLogger, derive_conversation_id
 from simple_chatbot.guard import ScopeGuardGate
-from simple_chatbot.indexer import Indexer
 from simple_chatbot.responses import (
     InvalidInputError,
     ResponseStore,
@@ -53,7 +52,7 @@ async def _log_requests(request: Request, call_next):
         return response
 
 
-def init(config: SimpleChatbotConfig, indexer: Indexer) -> None:
+def init(config: SimpleChatbotConfig, indexer, acompletion=None) -> None:
     global _config, _agent, _conversation_logger, _response_store
     _config = config
     gate: ScopeGuardGate | None = None
@@ -66,7 +65,7 @@ def init(config: SimpleChatbotConfig, indexer: Indexer) -> None:
             description_source=gate.describe_source(),
             block_classes=config.guard.block_classes,
         ).info("Scope guard enabled")
-    _agent = Agent(config, indexer, gate=gate)
+    _agent = Agent(config, indexer, gate=gate, acompletion=acompletion)
     _conversation_logger = ConversationLogger(config.conversation_log_dir)
     _response_store = ResponseStore()
     logger.bind(
