@@ -337,6 +337,47 @@ function_call_output, message]` trace without touching the LLM or embedding APIs
 No `--docs-dir` content is read in this mode (the flag is still required for
 CLI compatibility, but a non-existent or empty path works).
 
+**Multi-tool evaluator harness:** When `SIMPLE_CHATBOT_SCRIPTED_LLM=1` is active,
+the server exposes four tools to the model and selects them heuristically from
+the user's input. Use this to produce varied trace shapes for downstream
+evaluator testing.
+
+| Tool                              | Triggered when the user input contains…           |
+| --------------------------------- | ------------------------------------------------- |
+| `search_documents` (default)      | Any input that doesn't match another tool         |
+| `calculate(expression)`           | `calculate`, `compute`, `math`, or `<digit>±<digit>` |
+| `get_current_time(tz?)`           | The word `time`; `tz` extracted from `in <name>`  |
+| `lookup_user(user_id)`            | `lookup` or `user_id`                              |
+
+Use explicit markers in the user input to force specific trace shapes:
+
+| Marker          | Effect on the next turn                                                       |
+| --------------- | ----------------------------------------------------------------------------- |
+| `[parallel]`    | At least two tool calls in one assistant message → `[fc, fc, fco, fco, message]` |
+| `[reasoning]`   | Adds a `reasoning` output item before tool calls / the final message          |
+| `[multi-round]` | Two sequential tool rounds before answering → `[fc, fco, fc, fco, message]`   |
+| `[error]`       | First tool call has malformed JSON arguments → exercises the agent's error path |
+
+Markers override the default chained-turn behavior (which suppresses tool calls
+on follow-up turns once a search already happened). Use them whenever you need
+deterministic fixtures.
+
+Examples:
+
+```bash
+# Parallel: two tool calls in one assistant message
+curl -X POST http://localhost:15078/v1/responses -H 'Content-Type: application/json' \
+  -d '{"input": "[parallel] calculate 2+2 and lookup user alice"}'
+
+# Multi-round: two sequential tool rounds
+curl -X POST http://localhost:15078/v1/responses -H 'Content-Type: application/json' \
+  -d '{"input": "[multi-round] research deeply"}'
+
+# Reasoning + tool call
+curl -X POST http://localhost:15078/v1/responses -H 'Content-Type: application/json' \
+  -d '{"input": "[reasoning] calculate the cost"}'
+```
+
 ## How It Works
 
 ```text
