@@ -307,5 +307,66 @@ class ResponseStoreTests(unittest.TestCase):
         self.assertIsNone(asyncio.run(scenario()))
 
 
+class BuildOutputItemsReasoningTests(unittest.TestCase):
+    def test_reasoning_emitted_before_function_calls_when_present_on_assistant(self):
+        tool_messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                ],
+                "reasoning_content": "thinking about the search query",
+            },
+            {"role": "tool", "tool_call_id": "c1", "name": "search_documents", "content": "RESULT"},
+        ]
+        items = build_output_items(_chat_result("final", tool_messages))
+        types = [it["type"] for it in items]
+        self.assertEqual(types, ["reasoning", "function_call", "function_call_output", "message"])
+        reasoning_item = items[0]
+        self.assertTrue(reasoning_item["id"].startswith("rs_"))
+        self.assertEqual(reasoning_item["summary"][0]["text"], "thinking about the search query")
+        self.assertEqual(reasoning_item["summary"][0]["type"], "summary_text")
+
+    def test_final_reasoning_emitted_before_final_message(self):
+        result = ChatResult(
+            content="my answer",
+            retrieved_chunks=[],
+            tool_messages=[],
+            final_reasoning_content="thinking before answering directly",
+        )
+        items = build_output_items(result)
+        types = [it["type"] for it in items]
+        self.assertEqual(types, ["reasoning", "message"])
+        self.assertEqual(items[0]["summary"][0]["text"], "thinking before answering directly")
+
+    def test_no_reasoning_field_means_no_reasoning_item(self):
+        # Existing happy path: no reasoning anywhere -> no reasoning items.
+        items = build_output_items(_chat_result("hi"))
+        self.assertEqual([it["type"] for it in items], ["message"])
+
+    def test_reasoning_on_assistant_and_on_final_both_emitted(self):
+        tool_messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                ],
+                "reasoning_content": "first reasoning",
+            },
+            {"role": "tool", "tool_call_id": "c1", "name": "search_documents", "content": "R"},
+        ]
+        result = ChatResult(
+            content="final",
+            retrieved_chunks=[],
+            tool_messages=tool_messages,
+            final_reasoning_content="second reasoning",
+        )
+        items = build_output_items(result)
+        types = [it["type"] for it in items]
+        self.assertEqual(types, ["reasoning", "function_call", "function_call_output", "reasoning", "message"])
+        self.assertEqual(items[0]["summary"][0]["text"], "first reasoning")
+        self.assertEqual(items[3]["summary"][0]["text"], "second reasoning")
+
+
 if __name__ == "__main__":
     unittest.main()

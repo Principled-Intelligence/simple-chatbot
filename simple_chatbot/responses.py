@@ -22,12 +22,14 @@ from openai.types.responses import (
     Response,
     ResponseFunctionToolCall,
     ResponseOutputMessage,
+    ResponseReasoningItem,
     ResponseUsage,
 )
 from openai.types.responses.response_function_tool_call_output_item import (
     ResponseFunctionToolCallOutputItem,
 )
 from openai.types.responses.response_output_text import ResponseOutputText
+from openai.types.responses.response_reasoning_item import Summary
 from openai.types.responses.response_usage import InputTokensDetails, OutputTokensDetails
 
 from simple_chatbot.agent import ChatResult
@@ -92,6 +94,18 @@ def _msg_id() -> str:
     return f"msg_{uuid.uuid4().hex}"
 
 
+def _reasoning_id() -> str:
+    return f"rs_{uuid.uuid4().hex}"
+
+
+def _build_reasoning_item(text: str) -> dict:
+    return ResponseReasoningItem(
+        id=_reasoning_id(),
+        type="reasoning",
+        summary=[Summary(type="summary_text", text=text)],
+    ).model_dump()
+
+
 def build_output_items(result: ChatResult) -> list[dict]:
     """Convert a ChatResult into the ordered Responses API `output` array."""
     items: list[dict] = []
@@ -99,6 +113,10 @@ def build_output_items(result: ChatResult) -> list[dict]:
     for msg in result.tool_messages:
         role = msg.get("role")
         if role == "assistant":
+            # Emit reasoning item BEFORE function_call items if present
+            reasoning = msg.get("reasoning_content")
+            if reasoning:
+                items.append(_build_reasoning_item(reasoning))
             for tc in msg.get("tool_calls") or []:
                 fn = tc.get("function") or {}
                 items.append(
@@ -121,6 +139,10 @@ def build_output_items(result: ChatResult) -> list[dict]:
                     status="completed",
                 ).model_dump()
             )
+
+    # Emit final-message reasoning BEFORE the final message item
+    if result.final_reasoning_content:
+        items.append(_build_reasoning_item(result.final_reasoning_content))
 
     items.append(
         ResponseOutputMessage(

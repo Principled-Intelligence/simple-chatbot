@@ -33,6 +33,7 @@ class ChatResult:
     tool_messages: list[dict] = field(default_factory=list)
     usage: dict = field(default_factory=lambda: {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
     final_messages: list[dict] = field(default_factory=list)
+    final_reasoning_content: str | None = None
 
 
 class Agent:
@@ -145,6 +146,9 @@ class Agent:
             if finish_reason == "tool_calls" and assistant_msg.tool_calls:
                 round_log.bind(tool_call_count=len(assistant_msg.tool_calls)).info("Model requested tool calls")
                 assistant_dump = assistant_msg.model_dump()
+                reasoning = getattr(assistant_msg, "reasoning_content", None)
+                if reasoning is not None:
+                    assistant_dump["reasoning_content"] = reasoning
                 working.append(assistant_dump)
                 tool_messages.append(assistant_dump)
 
@@ -194,6 +198,7 @@ class Agent:
 
             round_log.bind(response_chars=len(last_content)).info("Final answer produced")
             logger.bind(answer_preview=last_content[:120]).debug("Answer preview")
+            final_reasoning = getattr(assistant_msg, "reasoning_content", None)
             final_messages = list(working) + [{"role": "assistant", "content": last_content}]
             return ChatResult(
                 content=last_content,
@@ -202,6 +207,7 @@ class Agent:
                 tool_messages=tool_messages,
                 usage=usage_totals,
                 final_messages=final_messages,
+                final_reasoning_content=final_reasoning,
             )
 
         logger.bind(max_tool_rounds=self.config.max_tool_rounds).warning(
@@ -216,16 +222,19 @@ class Agent:
             forced_response_kwargs["api_base"] = self.config.chat_api_base
 
         try:
-            final_response = await (self._acompletion or litellm.acompletion)(**forced_response_kwargs)
-            final_usage = final_response.usage
+            final_response_obj = await (self._acompletion or litellm.acompletion)(**forced_response_kwargs)
+            final_usage = final_response_obj.usage
             if final_usage:
                 usage_totals["prompt_tokens"] += getattr(final_usage, "prompt_tokens", 0) or 0
                 usage_totals["completion_tokens"] += getattr(final_usage, "completion_tokens", 0) or 0
                 usage_totals["total_tokens"] += getattr(final_usage, "total_tokens", 0) or 0
-            final_response = final_response.choices[0].message.content or ""
+            final_message = final_response_obj.choices[0].message
+            final_response = final_message.content or ""
+            final_reasoning = getattr(final_message, "reasoning_content", None)
         except Exception as exc:
             logger.bind(error=str(exc)).warning("Forced final response call failed")
             final_response = ""
+            final_reasoning = None
 
         logger.bind(response_chars=len(final_response)).info("Forced final response produced")
         final_messages = list(working) + [{"role": "assistant", "content": final_response}]
@@ -236,4 +245,5 @@ class Agent:
             tool_messages=tool_messages,
             usage=usage_totals,
             final_messages=final_messages,
+            final_reasoning_content=final_reasoning,
         )

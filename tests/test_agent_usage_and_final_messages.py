@@ -167,5 +167,58 @@ class AgentSystemPromptTests(unittest.TestCase):
             self.assertEqual(sent_messages[0]["content"], "You are a bot.")
 
 
+class AgentReasoningCaptureTests(unittest.TestCase):
+    def test_agent_captures_final_reasoning_content_when_present(self):
+        with TemporaryDirectory() as tmp:
+            agent = Agent(_config(tmp), _FakeIndexer())
+
+            # Build a fake response where the message exposes reasoning_content
+            class _MsgWithReasoning(_Message):
+                def __init__(self, content="", reasoning_content=None):
+                    super().__init__(content=content)
+                    self.reasoning_content = reasoning_content
+
+            responses = [
+                _Response(_MsgWithReasoning(content="answer", reasoning_content="my reasoning"), "stop"),
+            ]
+
+            with patch("simple_chatbot.agent.litellm.acompletion", new_callable=AsyncMock) as completion:
+                completion.side_effect = responses
+                result = asyncio.run(agent.chat([{"role": "user", "content": "hi"}]))
+
+            self.assertEqual(result.final_reasoning_content, "my reasoning")
+
+    def test_agent_captures_intermediate_reasoning_content_in_tool_messages(self):
+        with TemporaryDirectory() as tmp:
+            agent = Agent(_config(tmp), _FakeIndexer())
+
+            class _MsgWithToolsAndReasoning(_Message):
+                def __init__(self, tool_calls=None, reasoning_content=None):
+                    super().__init__(tool_calls=tool_calls)
+                    self.reasoning_content = reasoning_content
+
+                def model_dump(self):
+                    d = super().model_dump()
+                    return d  # base model_dump doesn't include reasoning_content; agent must inject it
+
+            responses = [
+                _Response(
+                    _MsgWithToolsAndReasoning(
+                        tool_calls=[_ToolCall("call_1", "search_documents", '{"query": "x"}')],
+                        reasoning_content="intermediate reasoning",
+                    ),
+                    "tool_calls",
+                ),
+                _Response(_Message(content="done"), "stop"),
+            ]
+
+            with patch("simple_chatbot.agent.litellm.acompletion", new_callable=AsyncMock) as completion:
+                completion.side_effect = responses
+                result = asyncio.run(agent.chat([{"role": "user", "content": "hi"}]))
+
+            assistant_msg = result.tool_messages[0]
+            self.assertEqual(assistant_msg.get("reasoning_content"), "intermediate reasoning")
+
+
 if __name__ == "__main__":
     unittest.main()
