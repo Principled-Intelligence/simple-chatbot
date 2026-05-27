@@ -90,6 +90,24 @@ class Agent:
             max_tool_rounds=config.max_tool_rounds,
         ).info("Agent initialised")
 
+    def _sampling_kwargs(self) -> dict:
+        """Return only the sampling params the user set explicitly (skip None)."""
+        # attr name on SimpleChatbotConfig  ->  key litellm/OpenAI expects on the wire
+        field_map = {
+            "temperature": "temperature",
+            "top_p": "top_p",
+            "gen_top_k": "top_k",
+            "min_p": "min_p",
+            "presence_penalty": "presence_penalty",
+            "frequency_penalty": "frequency_penalty",
+            "repetition_penalty": "repetition_penalty",
+        }
+        return {
+            wire: getattr(self.config, attr)
+            for attr, wire in field_map.items()
+            if getattr(self.config, attr) is not None
+        }
+
     async def chat(self, messages: list[dict]) -> ChatResult:
         logger.bind(
             message_count=len(messages),
@@ -139,6 +157,7 @@ class Agent:
             if self.config.chat_api_base:
                 kwargs["api_base"] = self.config.chat_api_base
                 logger.bind(api_base=self.config.chat_api_base).debug("Using custom chat API base")
+            kwargs.update(self._sampling_kwargs())
 
             logger.bind(
                 model=self.config.chat_model,
@@ -234,6 +253,7 @@ class Agent:
         }
         if self.config.chat_api_base:
             forced_response_kwargs["api_base"] = self.config.chat_api_base
+        forced_response_kwargs.update(self._sampling_kwargs())
 
         final_response = ""
         try:
