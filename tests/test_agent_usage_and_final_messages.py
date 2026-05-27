@@ -219,6 +219,44 @@ class AgentReasoningCaptureTests(unittest.TestCase):
             assistant_msg = result.tool_messages[0]
             self.assertEqual(assistant_msg.get("reasoning_content"), "intermediate reasoning")
 
+    def test_reasoning_content_does_not_leak_into_working_messages(self):
+        # The agent must not pass `reasoning_content` to the next LLM call's `messages`.
+        with TemporaryDirectory() as tmp:
+            agent = Agent(_config(tmp), _FakeIndexer())
+
+            class _MsgWithToolsAndReasoning(_Message):
+                def __init__(self, tool_calls=None, reasoning_content=None):
+                    super().__init__(tool_calls=tool_calls)
+                    self.reasoning_content = reasoning_content
+
+            responses = [
+                _Response(
+                    _MsgWithToolsAndReasoning(
+                        tool_calls=[_ToolCall("call_1", "search_documents", '{"query": "x"}')],
+                        reasoning_content="intermediate reasoning",
+                    ),
+                    "tool_calls",
+                ),
+                _Response(_Message(content="done"), "stop"),
+            ]
+
+            with patch("simple_chatbot.agent.litellm.acompletion", new_callable=AsyncMock) as completion:
+                completion.side_effect = responses
+                result = asyncio.run(agent.chat([{"role": "user", "content": "hi"}]))
+
+            # tool_messages SHOULD contain reasoning_content (trace)
+            self.assertEqual(result.tool_messages[0].get("reasoning_content"), "intermediate reasoning")
+
+            # But the messages list sent to LiteLLM on the SECOND call must NOT contain it
+            second_messages = completion.await_args_list[1].kwargs["messages"]
+            assistant_in_working = [m for m in second_messages if m.get("role") == "assistant"]
+            self.assertTrue(assistant_in_working, "expected assistant message in working")
+            for m in assistant_in_working:
+                self.assertNotIn(
+                    "reasoning_content", m,
+                    f"reasoning_content leaked into the LLM's working messages: {m}",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()

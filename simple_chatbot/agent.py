@@ -146,11 +146,16 @@ class Agent:
             if finish_reason == "tool_calls" and assistant_msg.tool_calls:
                 round_log.bind(tool_call_count=len(assistant_msg.tool_calls)).info("Model requested tool calls")
                 assistant_dump = assistant_msg.model_dump()
-                reasoning = getattr(assistant_msg, "reasoning_content", None)
-                if reasoning is not None:
-                    assistant_dump["reasoning_content"] = reasoning
                 working.append(assistant_dump)
-                tool_messages.append(assistant_dump)
+
+                # For trace only: include reasoning_content if the model produced it.
+                # Don't put this on `working` — it goes back to the LLM and some providers
+                # reject extra keys on message dicts.
+                reasoning = getattr(assistant_msg, "reasoning_content", None)
+                trace_dump = dict(assistant_dump)
+                if reasoning is not None:
+                    trace_dump["reasoning_content"] = reasoning
+                tool_messages.append(trace_dump)
 
                 for tc_idx, tool_call in enumerate(assistant_msg.tool_calls, start=1):
                     fn = getattr(tool_call, "function", None)

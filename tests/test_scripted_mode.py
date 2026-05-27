@@ -352,6 +352,51 @@ class MultiRoundTests(unittest.TestCase):
         self.assertEqual(resp.choices[0].finish_reason, "stop")
         self.assertIsNone(resp.choices[0].message.tool_calls or None)
 
+    def test_parallel_plus_multi_round_does_not_collapse(self):
+        # Round 1 with [parallel] + [multi-round]: should emit 2 parallel tool calls.
+        r1 = asyncio.run(scripted_acompletion(
+            messages=[{"role": "user", "content": "[parallel] [multi-round] calculate and lookup user bob"}],
+        ))
+        self.assertEqual(r1.choices[0].finish_reason, "tool_calls")
+        self.assertGreaterEqual(len(r1.choices[0].message.tool_calls), 2)
+
+        # Round 2: even though tool_count is already 2, multi-round should still emit ANOTHER tool call
+        r2 = asyncio.run(scripted_acompletion(
+            messages=[
+                {"role": "user", "content": "[parallel] [multi-round] calculate and lookup user bob"},
+                {"role": "assistant", "content": None,
+                 "tool_calls": [
+                     {"id": "c1", "type": "function", "function": {"name": "calculate", "arguments": "{}"}},
+                     {"id": "c2", "type": "function", "function": {"name": "lookup_user", "arguments": "{}"}},
+                 ]},
+                {"role": "tool", "tool_call_id": "c1", "content": "R1"},
+                {"role": "tool", "tool_call_id": "c2", "content": "R2"},
+            ],
+        ))
+        self.assertEqual(r2.choices[0].finish_reason, "tool_calls",
+                         "Round 2 should still emit another tool call when [multi-round] is set")
+        self.assertEqual(len(r2.choices[0].message.tool_calls), 1)
+
+    def test_reasoning_on_final_message_reflects_tool_results(self):
+        # After tool results, reasoning_content should mention "Reviewing N tool result(s)",
+        # NOT "Planned tool(s): none" (which would contradict the trace).
+        resp = asyncio.run(scripted_acompletion(
+            messages=[
+                {"role": "user", "content": "[reasoning] calculate the cost"},
+                {"role": "assistant", "content": None,
+                 "tool_calls": [
+                     {"id": "c1", "type": "function",
+                      "function": {"name": "calculate", "arguments": "{\"expression\": \"the cost\"}"}},
+                 ]},
+                {"role": "tool", "tool_call_id": "c1", "content": "RESULT"},
+            ],
+        ))
+        self.assertEqual(resp.choices[0].finish_reason, "stop")
+        rc = resp.choices[0].message.reasoning_content
+        self.assertIsNotNone(rc)
+        self.assertIn("Reviewing", rc)
+        self.assertNotIn("Planned tool(s): none", rc)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -161,11 +161,17 @@ def _build_args_for(tool_name: str, cleaned_text: str) -> dict:
 # Multi-round helpers
 # ---------------------------------------------------------------------------
 
-def _count_tools_since_latest_user(messages: list[dict]) -> int:
+def _count_rounds_since_latest_user(messages: list[dict]) -> int:
+    """Count assistant-with-tool_calls messages since the most recent user message.
+
+    Each such assistant message represents one round of tool calling (which may
+    contain N parallel tool calls). Used by the [multi-round] marker to decide
+    whether to emit another round or the final answer.
+    """
     count = 0
     for m in reversed(messages):
         role = m.get("role")
-        if role == "tool":
+        if role == "assistant" and (m.get("tool_calls") or []):
             count += 1
         elif role == "user":
             return count
@@ -189,6 +195,13 @@ def _reasoning_text(cleaned_text: str, tools: list[str]) -> str:
         f"User asked: {cleaned_text!r}. "
         f"Planned tool(s): {tool_list}. "
         f"I'll call the selected tool(s) and combine the results."
+    )
+
+
+def _final_reasoning_text(cleaned_text: str, tool_output_count: int) -> str:
+    return (
+        f"User asked: {cleaned_text!r}. "
+        f"Reviewing {tool_output_count} tool result(s) and producing the combined answer."
     )
 
 
@@ -315,8 +328,8 @@ async def acompletion(*, messages: list[dict], **kwargs) -> _ScriptedResponse:
         role = msg.get("role")
 
         if role == "tool":
-            tool_count = _count_tools_since_latest_user(messages)
-            if markers.multi_round and tool_count < 2:
+            rounds = _count_rounds_since_latest_user(messages)
+            if markers.multi_round and rounds < 2:
                 # Emit a second-round tool call with a different tool
                 primary = _pick_tools(cleaned_text)[0]
                 secondary = _multi_round_secondary_tool(primary)
@@ -335,7 +348,10 @@ async def acompletion(*, messages: list[dict], **kwargs) -> _ScriptedResponse:
             text = f"Scripted answer combining {len(tool_outputs)} tool result(s): {summary}"
             message = _ScriptedMessage(
                 content=text,
-                reasoning_content=_reasoning_text(cleaned_text, []) if markers.reasoning else None,
+                reasoning_content=(
+                    _final_reasoning_text(cleaned_text, len(tool_outputs))
+                    if markers.reasoning else None
+                ),
             )
             return _ScriptedResponse(
                 choices=[_ScriptedChoice(message=message, finish_reason="stop")],
