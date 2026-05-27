@@ -1,4 +1,3 @@
-import json
 from dataclasses import dataclass, field
 
 import litellm
@@ -8,59 +7,21 @@ from simple_chatbot.config import SimpleChatbotConfig
 from simple_chatbot.guard import ScopeGuardGate
 from simple_chatbot.indexer import Indexer
 from simple_chatbot.loader import Document
+from simple_chatbot.tools import (
+    ToolDef,
+    ToolResult,
+    make_search_tool,
+    SEARCH_TOOL_NAME,
+    SEARCH_TOOL_SCHEMA,
+)
 
-SEARCH_TOOL_NAME = "search_documents"
+# Backward-compat re-export: tests import SEARCH_TOOL from this module
+SEARCH_TOOL = SEARCH_TOOL_SCHEMA
 
 EMPTY_KB_RESPONSE = (
     "I don't have any indexed documents to search yet. Add documents to the knowledge base "
     "and reindex it before asking document-based questions."
 )
-
-SEARCH_TOOL = {
-    "type": "function",
-    "function": {
-        "name": SEARCH_TOOL_NAME,
-        "description": (
-            "Search the document index for relevant information. "
-            "Use this whenever the user asks something that may be answered by the loaded documents."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {"type": "string", "description": "The search query"},
-            },
-            "required": ["query"],
-        },
-    },
-}
-
-
-def _tool_error(message: str) -> str:
-    return f"Tool error: {message}"
-
-
-def _parse_search_tool_query(fn_name: str | None, raw_args) -> tuple[str | None, str | None]:
-    if fn_name != SEARCH_TOOL_NAME:
-        return None, f"unsupported tool {fn_name!r}; available tool is {SEARCH_TOOL_NAME!r}"
-
-    if isinstance(raw_args, dict):
-        args = raw_args
-    elif isinstance(raw_args, str):
-        try:
-            args = json.loads(raw_args or "{}")
-        except json.JSONDecodeError as exc:
-            return None, f"invalid JSON arguments for {SEARCH_TOOL_NAME!r}: {exc.msg}"
-    else:
-        return None, f"arguments for {SEARCH_TOOL_NAME!r} must be a JSON object"
-
-    if not isinstance(args, dict):
-        return None, f"arguments for {SEARCH_TOOL_NAME!r} must be a JSON object"
-
-    query = args.get("query")
-    if not isinstance(query, str) or not query.strip():
-        return None, f"{SEARCH_TOOL_NAME!r} requires a non-empty string 'query' argument"
-
-    return query, None
 
 
 @dataclass
@@ -80,15 +41,19 @@ class Agent:
         config: SimpleChatbotConfig,
         indexer: Indexer,
         gate: ScopeGuardGate | None = None,
-        acompletion=None,  # NEW: defaults to litellm.acompletion
+        acompletion=None,
+        tools: list[ToolDef] | None = None,
     ) -> None:
         self.config = config
         self.indexer = indexer
         self.gate = gate
-        self._acompletion = acompletion  # None means "use litellm.acompletion at call time"
+        self._acompletion = acompletion
+        self.tools = tools if tools is not None else [make_search_tool(indexer)]
+        self._tool_by_name = {t.name: t for t in self.tools}
         logger.bind(
             model=config.chat_model,
             max_tool_rounds=config.max_tool_rounds,
+            tool_names=list(self._tool_by_name),
         ).info("Agent initialised")
 
     async def chat(self, messages: list[dict]) -> ChatResult:
@@ -112,7 +77,7 @@ class Agent:
                     content=self.gate.refusal_text(decision),
                     retrieved_chunks=[],
                     blocked_by_guard=True,
-                    tools=[SEARCH_TOOL],
+                    tools=[t.schema for t in self.tools],
                     usage=usage_totals,
                     final_messages=list(messages),
                 )
@@ -122,7 +87,7 @@ class Agent:
             return ChatResult(
                 content=EMPTY_KB_RESPONSE,
                 retrieved_chunks=[],
-                tools=[SEARCH_TOOL],
+                tools=[t.schema for t in self.tools],
                 usage=usage_totals,
                 final_messages=list(messages),
             )
@@ -147,7 +112,7 @@ class Agent:
             kwargs: dict = {
                 "model": self.config.chat_model,
                 "messages": working,
-                "tools": [SEARCH_TOOL],
+                "tools": [t.schema for t in self.tools],
                 "tool_choice": "auto",
             }
             if self.config.chat_api_base:
@@ -197,26 +162,25 @@ class Agent:
                     tool_log.info("Tool call received")
                     tool_log.bind(tool_arguments=raw_args).debug("Tool call arguments")
 
-                    query, error = _parse_search_tool_query(fn_name, raw_args)
-                    if error:
-                        tool_log.bind(error=error).warning("Invalid tool call")
-                        context = _tool_error(error)
+                    tool = self._tool_by_name.get(fn_name)
+                    if tool is None:
+                        available = ", ".join(sorted(self._tool_by_name)) or "(none)"
+                        error = f"unsupported tool {fn_name!r}; available tools: {available}"
+                        tool_log.bind(error=error).warning("Unknown tool name")
+                        context = f"Tool error: {error}"
                     else:
-                        tool_log.bind(query=query).debug("Searching index")
-                        results = await self.indexer.search(query)
-                        all_chunks.extend(results)
+                        try:
+                            result = await tool.executor(raw_args)
+                            context = result.text
+                            all_chunks.extend(result.chunks)
+                            tool_log.bind(
+                                result_chars=len(context),
+                                chunk_count=len(result.chunks),
+                            ).info("Tool executed")
+                        except Exception as exc:
+                            tool_log.bind(error=str(exc)).exception("Tool executor raised")
+                            context = f"Tool error: {exc}"
 
-                        if results:
-                            tool_log.bind(result_count=len(results)).info("Search returned results")
-                            context = "\n\n".join(
-                                f"[{d.metadata.get('source', 'unknown')}]\n{d.text}"
-                                for d in results
-                            )
-                        else:
-                            tool_log.warning("Search returned no results")
-                            context = "No relevant documents found."
-
-                    tool_log.bind(result_chars=len(context)).debug("Tool result prepared")
                     tool_result_msg = {
                         "role": "tool",
                         "tool_call_id": tool_call_id,
@@ -234,7 +198,7 @@ class Agent:
             return ChatResult(
                 content=last_content,
                 retrieved_chunks=all_chunks,
-                tools=[SEARCH_TOOL],
+                tools=[t.schema for t in self.tools],
                 tool_messages=tool_messages,
                 usage=usage_totals,
                 final_messages=final_messages,
@@ -268,7 +232,7 @@ class Agent:
         return ChatResult(
             content=final_response,
             retrieved_chunks=all_chunks,
-            tools=[SEARCH_TOOL],
+            tools=[t.schema for t in self.tools],
             tool_messages=tool_messages,
             usage=usage_totals,
             final_messages=final_messages,
