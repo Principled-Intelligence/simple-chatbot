@@ -373,7 +373,7 @@ async def acompletion(*, messages: list[dict], **kwargs) -> _ScriptedResponse:
             if markers.multi_round and rounds < 2:
                 # Emit a second-round tool call with a different tool
                 primary = (
-                    forced_tools[0] if forced_tools else _pick_tools(cleaned_text)[0]
+                    forced_tools[0] if forced_tools is not None else _pick_tools(cleaned_text)[0]
                 )
                 secondary = _multi_round_secondary_tool(primary)
                 tc = _make_tool_call(secondary, _build_args_for(secondary, cleaned_text))

@@ -621,8 +621,11 @@ class ExhaustiveModeDispatchTests(unittest.TestCase):
         import json as _json
         with self.assertRaises(_json.JSONDecodeError):
             _json.loads(tcs[0].function.arguments)
-        # Should NOT be all four tools — the override yielded to the explicit marker.
-        self.assertLess(len(tcs), 4)
+        # Tighter: slot 0 would have given 4 tools; [error] should yield exactly
+        # 1 with the heuristic default `search_documents`. Proves the override
+        # was bypassed by the explicit marker, not just that the shapes differ.
+        self.assertEqual(len(tcs), 1)
+        self.assertEqual(tcs[0].function.name, "search_documents")
 
     def test_env_var_off_does_not_change_default_behavior(self):
         # Env var unset → existing scripted heuristic applies: single
