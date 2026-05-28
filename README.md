@@ -358,6 +358,25 @@ Use explicit markers in the user input to force specific trace shapes:
 | `[multi-round]` | Two sequential tool rounds before answering → `[fc, fco, fc, fco, message]`   |
 | `[error]`       | First tool call has malformed JSON arguments → exercises the agent's error path |
 
+**Exhaustive showcase mode:** Set `EXHAUSTIVE_TOOL_USE=1` alongside
+`SIMPLE_CHATBOT_SCRIPTED_LLM=1` to make every scripted user turn cycle through
+a fixed 5-slot rotation that exercises every mocked tool and every trace
+shape over a typical conversation. By construction, the first user turn fires
+all four tools in parallel and subsequent turns rotate through multi-round,
+errored, parallel-pair, and plain-single shapes:
+
+| User turn (mod 5) | Shape          | Tools                                                          |
+|-------------------|----------------|----------------------------------------------------------------|
+| 0                 | All-parallel   | `search_documents`, `calculate`, `get_current_time`, `lookup_user` |
+| 1                 | Multi-round    | round 1 `search_documents`, round 2 `calculate`                |
+| 2                 | Errored call   | `lookup_user` with malformed JSON args                          |
+| 3                 | Parallel pair  | `calculate`, `get_current_time`                                |
+| 4                 | Plain single   | `search_documents`                                             |
+
+Explicit bracketed markers (`[parallel]`, `[multi-round]`, `[error]`,
+`[reasoning]`) in the user's text still take precedence over the rotation, so
+a tester can force any specific shape on any individual turn.
+
 Every user turn is routed through tool-selection heuristics — there is no
 "chained-turn suppression" in the mock. Follow-up turns can pick different
 tools than the prior turn, which is how you'd want a real agent to behave

@@ -10,7 +10,7 @@ Primary modules:
 - `simple_chatbot/server.py`: FastAPI `/v1/models`, `/v1/chat/completions`, and `/v1/responses` endpoints.
 - `simple_chatbot/agent.py`: Agentic chat loop and `search_documents` tool handling.
 - `simple_chatbot/tools.py`: Tool registry (`ToolDef`, `ToolResult`), search tool wrapper, and mock calculate/time/lookup tools for scripted mode.
-- `simple_chatbot/scripted_llm.py`: Scripted LLM dispatch with marker-driven trace shapes (`[parallel]`, `[reasoning]`, `[multi-round]`, `[error]`) and keyword heuristics for tool selection.
+- `simple_chatbot/scripted_llm.py`: Scripted LLM dispatch with marker-driven trace shapes (`[parallel]`, `[reasoning]`, `[multi-round]`, `[error]`), keyword heuristics for tool selection, and an `EXHAUSTIVE_TOOL_USE` env-var rotation that cycles through every tool and trace shape over five turns.
 - `simple_chatbot/scripted_indexer.py`: Scripted indexer that returns canned results without touching ChromaDB or embedding APIs.
 - `simple_chatbot/responses.py`: Responses API request parsing, output-item mapping, and in-memory response store.
 - `simple_chatbot/indexer.py`: ChromaDB persistence, embedding, and search.
