@@ -201,6 +201,46 @@ def _multi_round_secondary_tool(primary_tool: str) -> str:
     return rotation[(primary_idx + 1) % len(rotation)]
 
 
+# Exhaustive-mode rotation: 5 slots, indexed by user-turn index (mod 5).
+# Each slot = (marker keyword args, forced tool list). The first user turn
+# (single user message in history) is slot 0; subsequent turns advance.
+_EXHAUSTIVE_ROTATION: list[tuple[dict, list[str]]] = [
+    # slot 0: all-parallel + reasoning, every tool fires once
+    (
+        {"parallel": True, "reasoning": True},
+        ["search_documents", "calculate", "get_current_time", "lookup_user"],
+    ),
+    # slot 1: multi-round + reasoning; round 1 = search, round 2 = calculate
+    # (the existing _multi_round_secondary_tool helper rotates search -> calculate)
+    (
+        {"multi_round": True, "reasoning": True},
+        ["search_documents"],
+    ),
+    # slot 2: errored single tool call (malformed JSON args) + reasoning
+    (
+        {"error": True, "reasoning": True},
+        ["lookup_user"],
+    ),
+    # slot 3: parallel pair + reasoning
+    (
+        {"parallel": True, "reasoning": True},
+        ["calculate", "get_current_time"],
+    ),
+    # slot 4: plain single tool + reasoning (baseline shape)
+    (
+        {"reasoning": True},
+        ["search_documents"],
+    ),
+]
+
+
+def _exhaustive_overrides(turn_idx: int) -> tuple[_Markers, list[str]]:
+    """Return synthesized (markers, forced_tools) for the given user-turn index."""
+    slot = turn_idx % len(_EXHAUSTIVE_ROTATION)
+    marker_kwargs, tools = _EXHAUSTIVE_ROTATION[slot]
+    return _Markers(**marker_kwargs), list(tools)
+
+
 # ---------------------------------------------------------------------------
 # Reasoning text
 # ---------------------------------------------------------------------------

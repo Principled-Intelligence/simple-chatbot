@@ -466,6 +466,59 @@ class ExhaustiveModeHelperTests(unittest.TestCase):
         ]
         self.assertEqual(_count_user_turns(msgs), 1)
 
+    def test_exhaustive_overrides_slot_0_all_parallel(self):
+        from simple_chatbot.scripted_llm import _exhaustive_overrides
+        markers, tools = _exhaustive_overrides(0)
+        self.assertTrue(markers.parallel)
+        self.assertTrue(markers.reasoning)
+        self.assertFalse(markers.multi_round)
+        self.assertFalse(markers.error)
+        self.assertEqual(
+            sorted(tools),
+            sorted(["search_documents", "calculate", "get_current_time", "lookup_user"]),
+        )
+
+    def test_exhaustive_overrides_slot_1_multi_round(self):
+        from simple_chatbot.scripted_llm import _exhaustive_overrides
+        markers, tools = _exhaustive_overrides(1)
+        self.assertTrue(markers.multi_round)
+        self.assertTrue(markers.reasoning)
+        self.assertFalse(markers.parallel)
+        self.assertFalse(markers.error)
+        self.assertEqual(tools, ["search_documents"])
+
+    def test_exhaustive_overrides_slot_2_error(self):
+        from simple_chatbot.scripted_llm import _exhaustive_overrides
+        markers, tools = _exhaustive_overrides(2)
+        self.assertTrue(markers.error)
+        self.assertTrue(markers.reasoning)
+        self.assertEqual(tools, ["lookup_user"])
+
+    def test_exhaustive_overrides_slot_3_parallel_pair(self):
+        from simple_chatbot.scripted_llm import _exhaustive_overrides
+        markers, tools = _exhaustive_overrides(3)
+        self.assertTrue(markers.parallel)
+        self.assertTrue(markers.reasoning)
+        self.assertEqual(tools, ["calculate", "get_current_time"])
+
+    def test_exhaustive_overrides_slot_4_plain_single(self):
+        from simple_chatbot.scripted_llm import _exhaustive_overrides
+        markers, tools = _exhaustive_overrides(4)
+        self.assertTrue(markers.reasoning)
+        self.assertFalse(markers.parallel)
+        self.assertFalse(markers.multi_round)
+        self.assertFalse(markers.error)
+        self.assertEqual(tools, ["search_documents"])
+
+    def test_exhaustive_overrides_wraps_modulo_5(self):
+        from simple_chatbot.scripted_llm import _exhaustive_overrides
+        for base in [0, 1, 2, 3, 4]:
+            m_a, t_a = _exhaustive_overrides(base)
+            m_b, t_b = _exhaustive_overrides(base + 5)
+            self.assertEqual((m_a.parallel, m_a.reasoning, m_a.multi_round, m_a.error),
+                             (m_b.parallel, m_b.reasoning, m_b.multi_round, m_b.error))
+            self.assertEqual(t_a, t_b)
+
 
 if __name__ == "__main__":
     unittest.main()
