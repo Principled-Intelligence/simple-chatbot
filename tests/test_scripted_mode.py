@@ -520,5 +520,124 @@ class ExhaustiveModeHelperTests(unittest.TestCase):
             self.assertEqual(t_a, t_b)
 
 
+class ExhaustiveModeDispatchTests(unittest.TestCase):
+    """End-to-end tests for EXHAUSTIVE_TOOL_USE=1 routing through acompletion()."""
+
+    def _exhaustive_env(self):
+        import os
+        from unittest.mock import patch
+        return patch.dict(os.environ, {"EXHAUSTIVE_TOOL_USE": "1"})
+
+    def test_first_user_turn_emits_all_four_tools_in_parallel(self):
+        with self._exhaustive_env():
+            resp = asyncio.run(scripted_acompletion(
+                messages=[{"role": "user", "content": "anything"}],
+            ))
+        choice = resp.choices[0]
+        self.assertEqual(choice.finish_reason, "tool_calls")
+        names = sorted(tc.function.name for tc in choice.message.tool_calls)
+        self.assertEqual(
+            names,
+            sorted(["search_documents", "calculate", "get_current_time", "lookup_user"]),
+        )
+        self.assertIsNotNone(choice.message.reasoning_content)
+
+    def test_second_user_turn_multi_round_emits_round_two_on_tool_result(self):
+        # Two user messages in history → turn index 1 → multi-round.
+        # Final user message present, then a tool result.
+        msgs = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "answer 1"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": None,
+             "tool_calls": [{"id": "c1", "type": "function",
+                             "function": {"name": "search_documents", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "c1", "content": "R1"},
+        ]
+        with self._exhaustive_env():
+            resp = asyncio.run(scripted_acompletion(messages=msgs))
+        choice = resp.choices[0]
+        self.assertEqual(choice.finish_reason, "tool_calls")
+        self.assertEqual(len(choice.message.tool_calls), 1)
+        # Secondary tool after search_documents is calculate per the rotation helper.
+        self.assertEqual(choice.message.tool_calls[0].function.name, "calculate")
+
+    def test_third_user_turn_emits_malformed_args(self):
+        # Three user messages → turn index 2 → errored shape.
+        msgs = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "a"},
+            {"role": "user", "content": "second"},
+            {"role": "assistant", "content": "b"},
+            {"role": "user", "content": "third"},
+        ]
+        with self._exhaustive_env():
+            resp = asyncio.run(scripted_acompletion(messages=msgs))
+        tc = resp.choices[0].message.tool_calls[0]
+        self.assertEqual(tc.function.name, "lookup_user")
+        import json as _json
+        with self.assertRaises(_json.JSONDecodeError):
+            _json.loads(tc.function.arguments)
+
+    def test_fifth_user_turn_emits_single_search_with_reasoning(self):
+        # Five user messages → turn index 4 → plain single search_documents.
+        msgs = []
+        for i in range(5):
+            msgs.append({"role": "user", "content": f"q{i}"})
+            if i < 4:
+                msgs.append({"role": "assistant", "content": f"a{i}"})
+        with self._exhaustive_env():
+            resp = asyncio.run(scripted_acompletion(messages=msgs))
+        choice = resp.choices[0]
+        self.assertEqual(len(choice.message.tool_calls), 1)
+        self.assertEqual(choice.message.tool_calls[0].function.name, "search_documents")
+        self.assertIsNotNone(choice.message.reasoning_content)
+
+    def test_sixth_user_turn_wraps_back_to_slot_0(self):
+        # Six user messages → turn index 5 → slot 0 → all four parallel.
+        msgs = []
+        for i in range(6):
+            msgs.append({"role": "user", "content": f"q{i}"})
+            if i < 5:
+                msgs.append({"role": "assistant", "content": f"a{i}"})
+        with self._exhaustive_env():
+            resp = asyncio.run(scripted_acompletion(messages=msgs))
+        names = sorted(tc.function.name for tc in resp.choices[0].message.tool_calls)
+        self.assertEqual(
+            names,
+            sorted(["search_documents", "calculate", "get_current_time", "lookup_user"]),
+        )
+
+    def test_explicit_bracketed_marker_overrides_exhaustive(self):
+        # Even on turn 0 (which would be all-parallel), an explicit [error]
+        # marker should yield the existing error shape: single tool with
+        # malformed args, defaulting to search_documents per heuristic.
+        with self._exhaustive_env():
+            resp = asyncio.run(scripted_acompletion(
+                messages=[{"role": "user", "content": "[error] hello"}],
+            ))
+        tcs = resp.choices[0].message.tool_calls
+        # Existing [error] behavior: first call is malformed.
+        import json as _json
+        with self.assertRaises(_json.JSONDecodeError):
+            _json.loads(tcs[0].function.arguments)
+        # Should NOT be all four tools — the override yielded to the explicit marker.
+        self.assertLess(len(tcs), 4)
+
+    def test_env_var_off_does_not_change_default_behavior(self):
+        # Env var unset → existing scripted heuristic applies: single
+        # search_documents call for an arbitrary message.
+        import os
+        from unittest.mock import patch
+        env_no_var = {k: v for k, v in os.environ.items() if k != "EXHAUSTIVE_TOOL_USE"}
+        with patch.dict(os.environ, env_no_var, clear=True):
+            resp = asyncio.run(scripted_acompletion(
+                messages=[{"role": "user", "content": "tell me about elephants"}],
+            ))
+        tcs = resp.choices[0].message.tool_calls
+        self.assertEqual(len(tcs), 1)
+        self.assertEqual(tcs[0].function.name, "search_documents")
+
+
 if __name__ == "__main__":
     unittest.main()

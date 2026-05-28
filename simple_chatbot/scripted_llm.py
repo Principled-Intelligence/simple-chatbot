@@ -341,16 +341,28 @@ async def acompletion(*, messages: list[dict], **kwargs) -> _ScriptedResponse:
     explicit `[parallel]`, `[reasoning]`, `[multi-round]`, `[error]` markers
     that force specific trace shapes.
 
+    When `EXHAUSTIVE_TOOL_USE` is truthy and the user text contains no
+    bracketed marker, a 5-slot rotation indexed by user-turn count overrides
+    both markers and tool selection so a typical conversation cycles through
+    every tool and every shape.
+
     Dispatches by walking messages from the end backwards:
     - tool result -> emit another tool call (multi-round) or final answer
-    - user input -> pick tools per heuristic / markers, emit tool_call(s)
-                    (or skip if chained-turn with prior tool activity and no
-                     explicit marker overriding)
+    - user input -> pick tools per heuristic / markers / exhaustive override,
+                    emit tool_call(s)
     - nothing dispatchable -> generic "ok" stop
     """
     last_user_msg = _find_latest_user(messages)
     last_user_text = _extract_user_text(last_user_msg.get("content") if last_user_msg else "")
     markers, cleaned_text = _parse_markers(last_user_text)
+
+    # Exhaustive-mode override: synthesize markers + forced tools from the
+    # rotation when the env var is set AND the user did not type a bracketed
+    # marker (those still win, so testers can force a shape per-turn).
+    forced_tools: list[str] | None = None
+    if _is_exhaustive() and not markers.bracketed:
+        turn_idx = max(0, _count_user_turns(messages) - 1)
+        markers, forced_tools = _exhaustive_overrides(turn_idx)
 
     for idx in range(len(messages) - 1, -1, -1):
         msg = messages[idx]
@@ -360,7 +372,9 @@ async def acompletion(*, messages: list[dict], **kwargs) -> _ScriptedResponse:
             rounds = _count_rounds_since_latest_user(messages)
             if markers.multi_round and rounds < 2:
                 # Emit a second-round tool call with a different tool
-                primary = _pick_tools(cleaned_text)[0]
+                primary = (
+                    forced_tools[0] if forced_tools else _pick_tools(cleaned_text)[0]
+                )
                 secondary = _multi_round_secondary_tool(primary)
                 tc = _make_tool_call(secondary, _build_args_for(secondary, cleaned_text))
                 message = _ScriptedMessage(
@@ -387,7 +401,7 @@ async def acompletion(*, messages: list[dict], **kwargs) -> _ScriptedResponse:
             )
 
         if role == "user":
-            tools = _pick_tools(cleaned_text)
+            tools = forced_tools if forced_tools is not None else _pick_tools(cleaned_text)
             if markers.parallel and len(tools) < 2:
                 # Force parallelism by appending an extra tool
                 rotation = ["search_documents", "calculate", "get_current_time", "lookup_user"]
