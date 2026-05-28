@@ -437,6 +437,35 @@ class ExhaustiveModeHelperTests(unittest.TestCase):
             with patch.dict(os.environ, {"EXHAUSTIVE_TOOL_USE": value}):
                 self.assertFalse(_is_exhaustive(), f"expected falsy for {value!r}")
 
+    def test_count_user_turns_empty_messages(self):
+        from simple_chatbot.scripted_llm import _count_user_turns
+        self.assertEqual(_count_user_turns([]), 0)
+
+    def test_count_user_turns_one_user(self):
+        from simple_chatbot.scripted_llm import _count_user_turns
+        self.assertEqual(_count_user_turns([{"role": "user", "content": "hi"}]), 1)
+
+    def test_count_user_turns_mixed_roles(self):
+        from simple_chatbot.scripted_llm import _count_user_turns
+        msgs = [
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "x"},
+            {"role": "tool", "content": "r"},
+            {"role": "user", "content": "b"},
+            {"role": "assistant", "content": "y"},
+            {"role": "user", "content": "c"},
+        ]
+        self.assertEqual(_count_user_turns(msgs), 3)
+
+    def test_count_user_turns_ignores_unknown_roles(self):
+        from simple_chatbot.scripted_llm import _count_user_turns
+        msgs = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "a"},
+            {"role": "developer", "content": "d"},
+        ]
+        self.assertEqual(_count_user_turns(msgs), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

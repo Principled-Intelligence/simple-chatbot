@@ -189,6 +189,11 @@ def _count_rounds_since_latest_user(messages: list[dict]) -> int:
     return count
 
 
+def _count_user_turns(messages: list[dict]) -> int:
+    """Count `user`-role messages in the input. Used to index the exhaustive rotation."""
+    return sum(1 for m in messages if m.get("role") == "user")
+
+
 def _multi_round_secondary_tool(primary_tool: str) -> str:
     """Pick a different tool for the second round so the trace shows variety."""
     rotation = ["search_documents", "calculate", "get_current_time", "lookup_user"]
