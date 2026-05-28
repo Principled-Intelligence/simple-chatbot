@@ -408,5 +408,35 @@ class MultiRoundTests(unittest.TestCase):
         self.assertNotIn("Planned tool(s): none", rc)
 
 
+class ExhaustiveModeHelperTests(unittest.TestCase):
+    def test_is_exhaustive_true_when_env_set_to_1(self):
+        import os
+        from unittest.mock import patch
+        from simple_chatbot.scripted_llm import _is_exhaustive
+        with patch.dict(os.environ, {"EXHAUSTIVE_TOOL_USE": "1"}):
+            self.assertTrue(_is_exhaustive())
+
+    def test_is_exhaustive_true_for_truthy_values(self):
+        import os
+        from unittest.mock import patch
+        from simple_chatbot.scripted_llm import _is_exhaustive
+        for value in ["1", "true", "TRUE", "yes", "on", "  true  "]:
+            with patch.dict(os.environ, {"EXHAUSTIVE_TOOL_USE": value}):
+                self.assertTrue(_is_exhaustive(), f"expected truthy for {value!r}")
+
+    def test_is_exhaustive_false_for_unset_or_falsy(self):
+        import os
+        from unittest.mock import patch
+        from simple_chatbot.scripted_llm import _is_exhaustive
+        # Unset
+        env_no_var = {k: v for k, v in os.environ.items() if k != "EXHAUSTIVE_TOOL_USE"}
+        with patch.dict(os.environ, env_no_var, clear=True):
+            self.assertFalse(_is_exhaustive())
+        # Empty / falsy values
+        for value in ["", "0", "false", "no", "off", "garbage"]:
+            with patch.dict(os.environ, {"EXHAUSTIVE_TOOL_USE": value}):
+                self.assertFalse(_is_exhaustive(), f"expected falsy for {value!r}")
+
+
 if __name__ == "__main__":
     unittest.main()

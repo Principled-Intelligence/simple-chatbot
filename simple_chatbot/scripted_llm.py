@@ -1,7 +1,18 @@
 import json
+import os
 import re
 import uuid
 from dataclasses import dataclass, field
+
+
+def _is_exhaustive() -> bool:
+    """Return True if EXHAUSTIVE_TOOL_USE is set to a truthy value.
+
+    Read per-dispatch so tests can flip it with `patch.dict(os.environ, ...)`.
+    """
+    return os.environ.get("EXHAUSTIVE_TOOL_USE", "").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
 
 
 @dataclass
