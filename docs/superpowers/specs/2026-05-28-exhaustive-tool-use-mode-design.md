@@ -96,7 +96,7 @@ All changes live in `simple_chatbot/scripted_llm.py`:
   returns the synthesized markers + forced tools for `turn_idx % 5`.
 - **Dispatch wiring in `acompletion()`:**
   - At the top of the user-message branch, if `_EXHAUSTIVE` and the parsed
-    markers have no explicit marker set (`not markers.any_explicit`), replace
+    markers have no bracketed marker set (`not markers.bracketed`), replace
     `markers` and the result of `_pick_tools(cleaned_text)` with the rotation's
     overrides for this turn.
   - In the tool-result branch, also replace `markers` from the rotation so
