@@ -75,10 +75,9 @@ class _Markers:
     reasoning: bool = False
     multi_round: bool = False
     error: bool = False
-
-    @property
-    def any_explicit(self) -> bool:
-        return self.parallel or self.reasoning or self.multi_round or self.error
+    # True iff at least one bracketed marker (e.g. "[parallel]") appeared in
+    # the user's text. Heuristic phrases like "step by step" do NOT set this.
+    bracketed: bool = False
 
 
 def _parse_markers(text: str) -> tuple[_Markers, str]:
@@ -86,6 +85,7 @@ def _parse_markers(text: str) -> tuple[_Markers, str]:
     markers = _Markers()
 
     def _capture(m: re.Match) -> str:
+        markers.bracketed = True
         token = m.group(1).lower().replace("-", "")
         if token == "parallel":
             markers.parallel = True

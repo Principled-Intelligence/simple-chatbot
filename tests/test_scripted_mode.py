@@ -208,6 +208,22 @@ class ScriptedModeChainedTurnTests(unittest.TestCase):
 
 
 class MarkerDispatchTests(unittest.TestCase):
+    def test_parse_markers_sets_bracketed_when_bracket_present(self):
+        from simple_chatbot.scripted_llm import _parse_markers
+        markers, _ = _parse_markers("[parallel] hello")
+        self.assertTrue(markers.bracketed)
+
+    def test_parse_markers_bracketed_false_without_brackets(self):
+        from simple_chatbot.scripted_llm import _parse_markers
+        markers, _ = _parse_markers("hello world")
+        self.assertFalse(markers.bracketed)
+
+    def test_parse_markers_heuristic_reasoning_does_not_set_bracketed(self):
+        from simple_chatbot.scripted_llm import _parse_markers
+        markers, _ = _parse_markers("explain step by step")
+        self.assertTrue(markers.reasoning)
+        self.assertFalse(markers.bracketed)
+
     def test_parallel_marker_emits_multiple_tool_calls(self):
         resp = asyncio.run(scripted_acompletion(
             messages=[{"role": "user", "content": "[parallel] tell me about user alice"}],
