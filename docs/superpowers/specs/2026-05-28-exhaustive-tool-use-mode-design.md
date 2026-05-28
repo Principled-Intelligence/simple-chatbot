@@ -89,7 +89,7 @@ suppress exhaustive override.
 
 All changes live in `simple_chatbot/scripted_llm.py`:
 
-- **New module-level constant:** `_EXHAUSTIVE = os.environ.get("EXHAUSTIVE_TOOL_USE", "").strip().lower() in {"1", "true", "yes", "on"}`
+- **New helper:** `_is_exhaustive() -> bool` — reads `EXHAUSTIVE_TOOL_USE` per-dispatch so tests can flip the env var with `patch.dict(os.environ, ...)` without module-reload gymnastics.
 - **New helper:** `_count_user_turns(messages: list[dict]) -> int` — counts
   `user`-role messages in the list.
 - **New helper:** `_exhaustive_overrides(turn_idx: int) -> tuple[_Markers, list[str]]` —

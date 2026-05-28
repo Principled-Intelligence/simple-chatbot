@@ -579,6 +579,21 @@ class ExhaustiveModeDispatchTests(unittest.TestCase):
         with self.assertRaises(_json.JSONDecodeError):
             _json.loads(tc.function.arguments)
 
+    def test_fourth_user_turn_emits_parallel_pair(self):
+        # Four user messages → turn index 3 → parallel pair (calculate + get_current_time).
+        msgs = []
+        for i in range(4):
+            msgs.append({"role": "user", "content": f"q{i}"})
+            if i < 3:
+                msgs.append({"role": "assistant", "content": f"a{i}"})
+        with self._exhaustive_env():
+            resp = asyncio.run(scripted_acompletion(messages=msgs))
+        choice = resp.choices[0]
+        self.assertEqual(choice.finish_reason, "tool_calls")
+        names = sorted(tc.function.name for tc in choice.message.tool_calls)
+        self.assertEqual(names, sorted(["calculate", "get_current_time"]))
+        self.assertIsNotNone(choice.message.reasoning_content)
+
     def test_fifth_user_turn_emits_single_search_with_reasoning(self):
         # Five user messages → turn index 4 → plain single search_documents.
         msgs = []
@@ -640,6 +655,21 @@ class ExhaustiveModeDispatchTests(unittest.TestCase):
         tcs = resp.choices[0].message.tool_calls
         self.assertEqual(len(tcs), 1)
         self.assertEqual(tcs[0].function.name, "search_documents")
+
+    def test_heuristic_step_by_step_does_not_suppress_rotation(self):
+        # Heuristic reasoning phrases like "step by step" set markers.reasoning
+        # via the parser, but they must NOT set markers.bracketed, so the
+        # exhaustive rotation should still fire on a fresh first turn.
+        with self._exhaustive_env():
+            resp = asyncio.run(scripted_acompletion(
+                messages=[{"role": "user", "content": "explain step by step"}],
+            ))
+        names = sorted(tc.function.name for tc in resp.choices[0].message.tool_calls)
+        # Slot 0 → all four tools in parallel.
+        self.assertEqual(
+            names,
+            sorted(["search_documents", "calculate", "get_current_time", "lookup_user"]),
+        )
 
 
 if __name__ == "__main__":
