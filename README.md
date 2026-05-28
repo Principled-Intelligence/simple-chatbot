@@ -148,6 +148,7 @@ behavior:
 | Change chunking | `uv run simple-chatbot serve --docs-dir ./docs --chunk-size 800 --chunk-overlap 100` |
 | Run on another port | `uv run simple-chatbot serve --docs-dir ./docs --port 15077` |
 | Require API auth | `uv run simple-chatbot serve --docs-dir ./docs --api-key "dev-secret"` |
+| Control sampling | `uv run simple-chatbot serve --docs-dir ./docs --temperature 0.2 --top-p 0.9` |
 | Run offline (no API keys) | `SIMPLE_CHATBOT_SCRIPTED_LLM=1 uv run simple-chatbot serve --docs-dir /tmp/empty` |
 
 By default, the API binds to `127.0.0.1` and does not require a key. If you bind
@@ -469,6 +470,13 @@ simple-chatbot serve --docs-dir PATH [OPTIONS]
 | `--max-tool-rounds` | `5` | Max agentic loop iterations per request |
 | `--system-prompt` | `None` | System prompt text, or `@/path/to/file.txt` to load from disk |
 | `--conversation-log-dir` | `./conversations` | Directory for conversation JSONL logs |
+| `--temperature` | `None` | Sampling temperature (0–2); omit to use the model default |
+| `--top-p` | `None` | Nucleus sampling top-p; omit to use the model default |
+| `--gen-top-k` | `None` | Top-k sampling for generation; omit to use the model default |
+| `--min-p` | `None` | Min-p sampling threshold; omit to use the model default |
+| `--presence-penalty` | `None` | Presence penalty (−2 to 2); omit to use the model default |
+| `--frequency-penalty` | `None` | Frequency penalty (−2 to 2); omit to use the model default |
+| `--repetition-penalty` | `None` | Repetition penalty (>0); omit to use the model default |
 | `--reindex` | off | Clear the collection and rebuild it from current documents |
 | `--log-level` | `INFO` | `TRACE`, `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
 | `--log-format` | `pretty` | Operational log format: `pretty` or `json` |

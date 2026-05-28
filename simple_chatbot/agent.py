@@ -25,6 +25,10 @@ EMPTY_KB_RESPONSE = (
     "and reindex it before asking document-based questions."
 )
 
+FINAL_ANSWER_INSTRUCTION = (
+    "You have exhausted the available tool calls. Based on the search results already "
+    "in the conversation, write your final answer now in plain text. Do not request any more tools."
+)
 
 def _sanitize_assistant_dump(dump: dict) -> dict:
     """Reduce a LiteLLM `Message.model_dump()` to the keys that are safe to
@@ -89,6 +93,24 @@ class Agent:
             tool_names=list(self._tool_by_name),
         ).info("Agent initialised")
 
+    def _sampling_kwargs(self) -> dict:
+        """Return only the sampling params the user set explicitly (skip None)."""
+        # attr name on SimpleChatbotConfig  ->  key litellm/OpenAI expects on the wire
+        field_map = {
+            "temperature": "temperature",
+            "top_p": "top_p",
+            "gen_top_k": "top_k",
+            "min_p": "min_p",
+            "presence_penalty": "presence_penalty",
+            "frequency_penalty": "frequency_penalty",
+            "repetition_penalty": "repetition_penalty",
+        }
+        return {
+            wire: getattr(self.config, attr)
+            for attr, wire in field_map.items()
+            if getattr(self.config, attr) is not None
+        }
+
     async def chat(self, messages: list[dict]) -> ChatResult:
         logger.bind(
             message_count=len(messages),
@@ -151,6 +173,7 @@ class Agent:
             if self.config.chat_api_base:
                 kwargs["api_base"] = self.config.chat_api_base
                 logger.bind(api_base=self.config.chat_api_base).debug("Using custom chat API base")
+            kwargs.update(self._sampling_kwargs())
 
             logger.bind(
                 model=self.config.chat_model,
@@ -252,14 +275,29 @@ class Agent:
         logger.bind(max_tool_rounds=self.config.max_tool_rounds).warning(
             "Reached max tool rounds without final answer"
         )
+
+        context_block = "\n\n".join(
+            f"[{d.metadata.get('source', 'unknown')}]\n{d.text}" for d in all_chunks
+        )
+
+        system_content = (self.config.system_prompt or "") + "\n\n" + FINAL_ANSWER_INSTRUCTION
+        if context_block:
+            system_content += "\n\nRelevant search results:\n" + context_block
+
+        forced_messages: list[dict] = [{"role": "system", "content": system_content}]
+        forced_messages.extend(messages)
+
         forced_response_kwargs: dict = {
             "model": self.config.chat_model,
-            "messages": working,
+            "messages": forced_messages,
             "tool_choice": "none",
         }
         if self.config.chat_api_base:
             forced_response_kwargs["api_base"] = self.config.chat_api_base
+        forced_response_kwargs.update(self._sampling_kwargs())
 
+        final_response = ""
+        final_reasoning = None
         try:
             final_response_obj = await (self._acompletion or litellm.acompletion)(**forced_response_kwargs)
             final_usage = final_response_obj.usage
@@ -267,13 +305,18 @@ class Agent:
                 usage_totals["prompt_tokens"] += getattr(final_usage, "prompt_tokens", 0) or 0
                 usage_totals["completion_tokens"] += getattr(final_usage, "completion_tokens", 0) or 0
                 usage_totals["total_tokens"] += getattr(final_usage, "total_tokens", 0) or 0
-            final_message = final_response_obj.choices[0].message
+            choice = final_response_obj.choices[0]
+            final_message = choice.message
             final_response = final_message.content or ""
             final_reasoning = getattr(final_message, "reasoning_content", None)
+            logger.bind(
+                finish_reason=choice.finish_reason,
+                completion_tokens=final_usage.completion_tokens if final_usage else None,
+                content_chars=len(final_response),
+                reasoning_chars=len(final_reasoning) if final_reasoning else 0,
+            ).info("Forced final response call returned")
         except Exception as exc:
             logger.bind(error=str(exc)).warning("Forced final response call failed")
-            final_response = ""
-            final_reasoning = None
 
         logger.bind(response_chars=len(final_response)).info("Forced final response produced")
         final_messages = list(working) + [{"role": "assistant", "content": final_response}]
