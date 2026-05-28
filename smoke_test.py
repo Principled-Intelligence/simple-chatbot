@@ -67,6 +67,19 @@ def main() -> int:
         print(f"  ok — conversation_id={cid}")
         print(f"  assistant: {content!r}")
 
+        # Responses API probe
+        resp_payload = {"input": args.message}
+        print(f"→ POST {base}/v1/responses (input={args.message!r})")
+        resp_body = _post_json(f"{base}/v1/responses", resp_payload, timeout=args.timeout)
+        assert resp_body.get("object") == "response", f"unexpected /v1/responses response: {resp_body}"
+        output_items = resp_body.get("output") or []
+        message_items = [it for it in output_items if it.get("type") == "message"]
+        assert message_items, "no message item in output"
+        text = message_items[-1]["content"][0]["text"]
+        assert text, "empty assistant text"
+        print(f"  ok — response_id={resp_body['id']}, output_item_count={len(output_items)}")
+        print(f"  assistant: {text!r}")
+
         print("PASS")
         return 0
 

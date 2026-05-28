@@ -176,14 +176,34 @@ def serve(
         guard=guard_cfg,
     )
 
-    logger.bind(docs_dir=str(docs_dir)).info("Loading documents")
-    docs = load_documents(config)
-    logger.bind(chunk_count=len(docs)).info("Loaded document chunks")
+    scripted = os.environ.get("SIMPLE_CHATBOT_SCRIPTED_LLM", "").strip()
+    scripted_enabled = scripted not in ("", "0", "false", "False", "no", "No")
 
-    indexer = Indexer(config)
-    indexer.index(docs, force=reindex)
+    if scripted_enabled:
+        logger.warning(
+            "SIMPLE_CHATBOT_SCRIPTED_LLM is set: using scripted LLM and indexer "
+            "(no embeddings, no LLM, no ChromaDB). Do not use in production."
+        )
+        from simple_chatbot.scripted_indexer import ScriptedIndexer
+        from simple_chatbot.scripted_llm import acompletion as scripted_acompletion
+        from simple_chatbot.tools import scripted_tools
 
-    init(config, indexer)
+        indexer = ScriptedIndexer()
+        init(
+            config,
+            indexer,
+            acompletion=scripted_acompletion,
+            tools=scripted_tools(indexer),
+        )
+    else:
+        logger.bind(docs_dir=str(docs_dir)).info("Loading documents")
+        docs = load_documents(config)
+        logger.bind(chunk_count=len(docs)).info("Loaded document chunks")
+
+        indexer = Indexer(config)
+        indexer.index(docs, force=reindex)
+
+        init(config, indexer)
 
     logger.bind(host=host, port=port).info("Starting HTTP server")
     uvicorn.run(app, host=host, port=port, log_level="warning")

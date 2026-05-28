@@ -29,7 +29,7 @@ models or retrieval settings without adopting a production platform.
 | --- | --- |
 | Python | `>=3.12` |
 | Server URL | `http://127.0.0.1:8000` |
-| API routes | `GET /v1/models`, `POST /v1/chat/completions` |
+| API routes | `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, `GET /v1/responses/{id}` |
 | Chat model | `openai/gpt-5.4-nano` |
 | Embedding model | `openai/text-embedding-3-small` |
 | Documents | `.txt`, `.md`, `.pdf`, `.docx` |
@@ -122,6 +122,10 @@ The app does not load `.env` automatically.
   non-streaming clients.
 - Agentic retrieval: the model decides when to call the `search_documents` tool
   and can search multiple times per turn.
+- Chat completion responses expose the agent's tool schemas (`tools`) and the
+  full intermediate tool-call / tool-result trace (`tool_messages`) as
+  non-standard fields, so an external LLM-as-judge can inspect what the agent
+  actually invoked.
 - Persistent ChromaDB storage, with automatic rebuilds when the embedding or
   chunking fingerprint changes.
 - Independent chat and embedding model selection through
@@ -145,6 +149,7 @@ behavior:
 | Run on another port | `uv run simple-chatbot serve --docs-dir ./docs --port 15077` |
 | Require API auth | `uv run simple-chatbot serve --docs-dir ./docs --api-key "dev-secret"` |
 | Control sampling | `uv run simple-chatbot serve --docs-dir ./docs --temperature 0.2 --top-p 0.9` |
+| Run offline (no API keys) | `SIMPLE_CHATBOT_SCRIPTED_LLM=1 uv run simple-chatbot serve --docs-dir /tmp/empty` |
 
 By default, the API binds to `127.0.0.1` and does not require a key. If you bind
 to a network interface such as `--host 0.0.0.0`, set `--api-key` or
@@ -276,6 +281,123 @@ python smoke_test.py --base-url http://localhost:8000 --message "hi"
 ```
 
 </details>
+
+### Responses API
+
+In addition to `/v1/chat/completions`, the server exposes
+`POST /v1/responses` and `GET /v1/responses/{id}` implementing OpenAI's
+Responses API wire format. Every tool call and tool result appears in the
+response's `output` array, in the order it happened, so downstream evaluators
+can inspect the full trace.
+
+**Single turn:**
+
+```bash
+curl -X POST http://localhost:8000/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{"input": "What does the doc say about onboarding?"}'
+```
+
+Response (abbreviated):
+
+```json
+{
+  "id": "resp_...",
+  "object": "response",
+  "status": "completed",
+  "output": [
+    {"type": "function_call", "call_id": "call_1", "name": "search_documents", "arguments": "{\"query\": \"onboarding\"}"},
+    {"type": "function_call_output", "call_id": "call_1", "output": "..."},
+    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "...", "annotations": []}]}
+  ],
+  "usage": {"input_tokens": 123, "output_tokens": 45, "total_tokens": 168}
+}
+```
+
+**Multi-turn:** Pass the prior response's `id` as `previous_response_id`. Only
+new input items are needed; the server reconstructs prior context:
+
+```bash
+curl -X POST http://localhost:8000/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{"input": "tell me more", "previous_response_id": "resp_..."}'
+```
+
+**Notes:**
+- `tools` and `tool_choice` in the request are accepted but ignored — the
+  server always exposes its built-in `search_documents` tool.
+- Streaming (`stream: true`) is not supported.
+- Response state is stored in-memory; `previous_response_id` chains do not
+  survive a server restart.
+
+**Offline testing:** Set `SIMPLE_CHATBOT_SCRIPTED_LLM=1` before starting the server
+to skip every external call. A canned search tool returns a query-echoing fake
+document and a canned LLM returns a final answer that includes the search result,
+so a `POST /v1/responses` request produces a complete `[function_call,
+function_call_output, message]` trace without touching the LLM or embedding APIs.
+No `--docs-dir` content is read in this mode (the flag is still required for
+CLI compatibility, but a non-existent or empty path works).
+
+**Multi-tool evaluator harness:** When `SIMPLE_CHATBOT_SCRIPTED_LLM=1` is active,
+the server exposes four tools to the model and selects them heuristically from
+the user's input. Use this to produce varied trace shapes for downstream
+evaluator testing.
+
+| Tool                              | Triggered when the user input contains…           |
+| --------------------------------- | ------------------------------------------------- |
+| `search_documents` (default)      | Any input that doesn't match another tool         |
+| `calculate(expression)`           | `calculate`, `compute`, `math`, or `<digit>±<digit>` |
+| `get_current_time(tz?)`           | The word `time`; `tz` extracted from `in <name>`  |
+| `lookup_user(user_id)`            | `lookup` or `user_id`                              |
+
+Use explicit markers in the user input to force specific trace shapes:
+
+| Marker          | Effect on the next turn                                                       |
+| --------------- | ----------------------------------------------------------------------------- |
+| `[parallel]`    | At least two tool calls in one assistant message → `[fc, fc, fco, fco, message]` |
+| `[reasoning]`   | Adds a `reasoning` output item before tool calls / the final message          |
+| `[multi-round]` | Two sequential tool rounds before answering → `[fc, fco, fc, fco, message]`   |
+| `[error]`       | First tool call has malformed JSON arguments → exercises the agent's error path |
+
+**Exhaustive showcase mode:** Set `EXHAUSTIVE_TOOL_USE=1` alongside
+`SIMPLE_CHATBOT_SCRIPTED_LLM=1` to make every scripted user turn cycle through
+a fixed 5-slot rotation that exercises every mocked tool and every trace
+shape over a typical conversation. By construction, the first user turn fires
+all four tools in parallel and subsequent turns rotate through multi-round,
+errored, parallel-pair, and plain-single shapes:
+
+| User turn (mod 5) | Shape          | Tools                                                          |
+|-------------------|----------------|----------------------------------------------------------------|
+| 0                 | All-parallel   | `search_documents`, `calculate`, `get_current_time`, `lookup_user` |
+| 1                 | Multi-round    | round 1 `search_documents`, round 2 `calculate`                |
+| 2                 | Errored call   | `lookup_user` with malformed JSON args                          |
+| 3                 | Parallel pair  | `calculate`, `get_current_time`                                |
+| 4                 | Plain single   | `search_documents`                                             |
+
+Explicit bracketed markers (`[parallel]`, `[multi-round]`, `[error]`,
+`[reasoning]`) in the user's text still take precedence over the rotation, so
+a tester can force any specific shape on any individual turn.
+
+Every user turn is routed through tool-selection heuristics — there is no
+"chained-turn suppression" in the mock. Follow-up turns can pick different
+tools than the prior turn, which is how you'd want a real agent to behave
+across a multi-step conversation.
+
+Examples:
+
+```bash
+# Parallel: two tool calls in one assistant message
+curl -X POST http://localhost:15078/v1/responses -H 'Content-Type: application/json' \
+  -d '{"input": "[parallel] calculate 2+2 and lookup user alice"}'
+
+# Multi-round: two sequential tool rounds
+curl -X POST http://localhost:15078/v1/responses -H 'Content-Type: application/json' \
+  -d '{"input": "[multi-round] research deeply"}'
+
+# Reasoning + tool call
+curl -X POST http://localhost:15078/v1/responses -H 'Content-Type: application/json' \
+  -d '{"input": "[reasoning] calculate the cost"}'
+```
 
 ## How It Works
 
