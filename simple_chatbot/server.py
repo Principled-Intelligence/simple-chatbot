@@ -1,6 +1,7 @@
 import hmac
 import time
 import uuid
+from typing import Any, Awaitable, Callable
 
 from fastapi import FastAPI, HTTPException, Request
 from loguru import logger
@@ -10,12 +11,15 @@ from simple_chatbot.agent import Agent
 from simple_chatbot.config import SimpleChatbotConfig
 from simple_chatbot.conversation_logger import ConversationLogger, derive_conversation_id
 from simple_chatbot.guard import ScopeGuardGate
+from simple_chatbot.indexer import Indexer
 from simple_chatbot.responses import (
     InvalidInputError,
     ResponseStore,
     build_response,
     normalize_input,
 )
+from simple_chatbot.scripted_indexer import ScriptedIndexer
+from simple_chatbot.tools import ToolDef
 
 app = FastAPI(title="simple-chatbot")
 
@@ -23,6 +27,26 @@ _config: SimpleChatbotConfig | None = None
 _agent: Agent | None = None
 _conversation_logger: ConversationLogger | None = None
 _response_store: ResponseStore | None = None
+
+
+def _require_config() -> SimpleChatbotConfig:
+    assert _config is not None, "Server not initialised: call init() before serving requests"
+    return _config
+
+
+def _require_agent() -> Agent:
+    assert _agent is not None, "Server not initialised: call init() before serving requests"
+    return _agent
+
+
+def _require_conversation_logger() -> ConversationLogger:
+    assert _conversation_logger is not None, "Server not initialised: call init() before serving requests"
+    return _conversation_logger
+
+
+def _require_response_store() -> ResponseStore:
+    assert _response_store is not None, "Server not initialised: call init() before serving requests"
+    return _response_store
 
 
 @app.middleware("http")
@@ -52,7 +76,12 @@ async def _log_requests(request: Request, call_next):
         return response
 
 
-def init(config: SimpleChatbotConfig, indexer, acompletion=None, tools=None) -> None:
+def init(
+    config: SimpleChatbotConfig,
+    indexer: Indexer | ScriptedIndexer,
+    acompletion: Callable[..., Awaitable[Any]] | None = None,
+    tools: list[ToolDef] | None = None,
+) -> None:
     global _config, _agent, _conversation_logger, _response_store
     _config = config
     gate: ScopeGuardGate | None = None
@@ -174,7 +203,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
         ).info("Chat completion started")
 
         start = time.perf_counter()
-        result = await _agent.chat(body.messages)
+        result = await _require_agent().chat(body.messages)
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex}"
@@ -185,7 +214,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
             blocked_by_guard=result.blocked_by_guard,
         ).info("Chat completion finished")
 
-        await _conversation_logger.log(
+        await _require_conversation_logger().log(
             conversation_id=conversation_id,
             messages=body.messages,
             response=result.content,
@@ -196,7 +225,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
             "id": completion_id,
             "object": "chat.completion",
             "created": int(time.time()),
-            "model": _config.chat_model,
+            "model": _require_config().chat_model,
             "choices": [
                 {
                     "index": 0,
@@ -236,7 +265,7 @@ async def responses_create(request: Request, body: ResponsesRequest):
 
     prior_entry = None
     if body.previous_response_id:
-        prior_entry = await _response_store.get(body.previous_response_id)
+        prior_entry = await _require_response_store().get(body.previous_response_id)
         if prior_entry is None:
             raise HTTPException(
                 status_code=404,
@@ -280,12 +309,12 @@ async def responses_create(request: Request, body: ResponsesRequest):
         ).info("Response create started")
 
         start = time.perf_counter()
-        result = await _agent.chat(messages)
+        result = await _require_agent().chat(messages)
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         payload = build_response(
             result=result,
-            model=_config.chat_model,
+            model=_require_config().chat_model,
             previous_response_id=body.previous_response_id,
             conversation_id=conversation_id,
         )
@@ -296,14 +325,14 @@ async def responses_create(request: Request, body: ResponsesRequest):
             output_item_count=len(payload["output"]),
         ).info("Response create finished")
 
-        await _conversation_logger.log(
+        await _require_conversation_logger().log(
             conversation_id=conversation_id,
             messages=messages,
             response=result.content,
             chunks=[{"text": d.text, **d.metadata} for d in result.retrieved_chunks],
         )
 
-        await _response_store.put(
+        await _require_response_store().put(
             payload["id"],
             {
                 "response_id": payload["id"],
@@ -320,7 +349,7 @@ async def responses_create(request: Request, body: ResponsesRequest):
 @app.get("/v1/responses/{response_id}")
 async def responses_retrieve(response_id: str, request: Request):
     _require_auth(request)
-    entry = await _response_store.get(response_id)
+    entry = await _require_response_store().get(response_id)
     if entry is None:
         raise HTTPException(
             status_code=404,

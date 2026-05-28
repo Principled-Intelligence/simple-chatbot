@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from typing import Any, Awaitable, Callable
 
 import litellm
 from loguru import logger
@@ -7,6 +8,7 @@ from simple_chatbot.config import SimpleChatbotConfig
 from simple_chatbot.guard import ScopeGuardGate
 from simple_chatbot.indexer import Indexer
 from simple_chatbot.loader import Document
+from simple_chatbot.scripted_indexer import ScriptedIndexer
 from simple_chatbot.tools import (
     ToolDef,
     ToolResult,
@@ -22,6 +24,36 @@ EMPTY_KB_RESPONSE = (
     "I don't have any indexed documents to search yet. Add documents to the knowledge base "
     "and reindex it before asking document-based questions."
 )
+
+
+def _sanitize_assistant_dump(dump: dict) -> dict:
+    """Reduce a LiteLLM `Message.model_dump()` to the keys that are safe to
+    feed back to providers on the next turn. Some providers reject extra or
+    provider-specific keys (e.g. `reasoning_content`, `provider_specific_fields`,
+    `audio`, `thinking_blocks`). Keep only role, content, tool_calls (themselves
+    trimmed to `id`/`type`/`function:{name,arguments}`), and `name` if present.
+    """
+    sanitized: dict = {
+        "role": dump.get("role", "assistant"),
+        "content": dump.get("content"),
+    }
+    name = dump.get("name")
+    if name is not None:
+        sanitized["name"] = name
+    tool_calls = dump.get("tool_calls") or []
+    if tool_calls:
+        sanitized["tool_calls"] = [
+            {
+                "id": tc.get("id"),
+                "type": tc.get("type", "function"),
+                "function": {
+                    "name": (tc.get("function") or {}).get("name"),
+                    "arguments": (tc.get("function") or {}).get("arguments", ""),
+                },
+            }
+            for tc in tool_calls
+        ]
+    return sanitized
 
 
 @dataclass
@@ -40,9 +72,9 @@ class Agent:
     def __init__(
         self,
         config: SimpleChatbotConfig,
-        indexer: Indexer,
+        indexer: Indexer | ScriptedIndexer,
         gate: ScopeGuardGate | None = None,
-        acompletion=None,
+        acompletion: Callable[..., Awaitable[Any]] | None = None,
         tools: list[ToolDef] | None = None,
     ) -> None:
         self.config = config
@@ -146,11 +178,13 @@ class Agent:
             if finish_reason == "tool_calls" and assistant_msg.tool_calls:
                 round_log.bind(tool_call_count=len(assistant_msg.tool_calls)).info("Model requested tool calls")
                 assistant_dump = assistant_msg.model_dump()
-                working.append(assistant_dump)
+                # `working` is sent back to the LLM on subsequent rounds (and
+                # re-fed on chained Responses turns via `final_messages`), so
+                # strip provider-specific extras down to the keys providers accept.
+                working.append(_sanitize_assistant_dump(assistant_dump))
 
-                # For trace only: include reasoning_content if the model produced it.
-                # Don't put this on `working` — it goes back to the LLM and some providers
-                # reject extra keys on message dicts.
+                # `tool_messages` is the trace and keeps the full dump plus
+                # reasoning_content if present.
                 reasoning = getattr(assistant_msg, "reasoning_content", None)
                 trace_dump = dict(assistant_dump)
                 if reasoning is not None:

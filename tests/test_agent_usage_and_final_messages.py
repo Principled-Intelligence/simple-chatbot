@@ -257,6 +257,57 @@ class AgentReasoningCaptureTests(unittest.TestCase):
                     f"reasoning_content leaked into the LLM's working messages: {m}",
                 )
 
+    def test_extra_provider_fields_do_not_leak_into_working_messages(self):
+        # Sanitizer must drop arbitrary provider-specific keys from the
+        # assistant `model_dump()` before they ride back into the next LLM call
+        # or into the chained Responses `final_messages`.
+        with TemporaryDirectory() as tmp:
+            agent = Agent(_config(tmp), _FakeIndexer())
+
+            class _NoisyMessage(_Message):
+                def model_dump(self) -> dict:
+                    d = super().model_dump()
+                    d["provider_specific_fields"] = {"foo": "bar"}
+                    d["audio"] = None
+                    d["thinking_blocks"] = [{"type": "thinking", "thinking": "..."}]
+                    d["function_call"] = None
+                    d["annotations"] = []
+                    return d
+
+            responses = [
+                _Response(
+                    _NoisyMessage(
+                        tool_calls=[_ToolCall("call_1", "search_documents", '{"query": "x"}')],
+                    ),
+                    "tool_calls",
+                ),
+                _Response(_Message(content="done"), "stop"),
+            ]
+
+            with patch("simple_chatbot.agent.litellm.acompletion", new_callable=AsyncMock) as completion:
+                completion.side_effect = responses
+                result = asyncio.run(agent.chat([{"role": "user", "content": "hi"}]))
+
+            # Second LLM call's `messages` must not carry any provider-specific extras.
+            second_messages = completion.await_args_list[1].kwargs["messages"]
+            assistant_in_working = [m for m in second_messages if m.get("role") == "assistant"]
+            self.assertTrue(assistant_in_working)
+            allowed_keys = {"role", "content", "tool_calls", "name"}
+            for m in assistant_in_working:
+                self.assertEqual(
+                    set(m.keys()) - allowed_keys,
+                    set(),
+                    f"unexpected keys leaked into working: {set(m.keys()) - allowed_keys}",
+                )
+                for tc in m.get("tool_calls") or []:
+                    self.assertEqual(set(tc.keys()), {"id", "type", "function"})
+                    self.assertEqual(set(tc["function"].keys()), {"name", "arguments"})
+
+            # `final_messages` is the chain payload; it must be sanitized too.
+            assistant_in_final = [m for m in result.final_messages if m.get("role") == "assistant"]
+            for m in assistant_in_final:
+                self.assertEqual(set(m.keys()) - allowed_keys, set())
+
 
 if __name__ == "__main__":
     unittest.main()
