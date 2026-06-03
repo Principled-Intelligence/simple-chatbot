@@ -29,3 +29,24 @@ class CsRoutingFixtureTests(unittest.TestCase):
         names = {e["name"] for e in result.responses_tools}
         self.assertIn("route", names)
         self.assertIn("lookup_invoice", names)
+
+
+class ValidityProbeFixtureTests(unittest.TestCase):
+    def _run(self):
+        from simple_chatbot.fixtures.validity_probe import scenario
+        orch = ScenarioOrchestrator(scenario, DeterministicProvider())
+        return asyncio.run(orch.chat([{"role": "user", "content": "probe"}]))
+
+    def test_emits_unknown_malformed_and_required_violation(self):
+        result = self._run()
+        call_msgs = [m for m in result.tool_messages if m["role"] == "assistant" and m.get("tool_calls")]
+        args_by_name = {
+            m["tool_calls"][0]["function"]["name"]: m["tool_calls"][0]["function"]["arguments"]
+            for m in call_msgs
+        }
+        # unknown tool present
+        self.assertIn("ghost_tool", args_by_name)
+        # malformed args present (invalid JSON)
+        self.assertIn("{intentionally_malformed_json", args_by_name.values())
+        # a required-violation call with empty args present
+        self.assertIn("{}", args_by_name.values())
