@@ -1,7 +1,7 @@
 # tests/test_scenario_model.py
 import unittest
 
-from simple_chatbot.scenario import tool, ScenarioTool
+from simple_chatbot.scenario import tool, ScenarioTool, Call, Route, Final, MalformedCall, UnknownToolCall
 
 
 class ToolDecoratorTests(unittest.TestCase):
@@ -37,3 +37,36 @@ class ToolDecoratorTests(unittest.TestCase):
             return {"echoed": value}
 
         self.assertEqual(echo.func(value="hi"), {"echoed": "hi"})
+
+
+class StepTypeTests(unittest.TestCase):
+    def _t(self):
+        @tool
+        def lookup_invoice(invoice_id: str) -> dict:
+            """Look up an invoice."""
+            return {"invoice_id": invoice_id}
+        return lookup_invoice
+
+    def test_call_holds_tool_and_args(self):
+        t = self._t()
+        c = Call(t, {"invoice_id": "INV-1"})
+        self.assertIs(c.tool, t)
+        self.assertEqual(c.args, {"invoice_id": "INV-1"})
+        self.assertFalse(c.irrelevant)
+
+    def test_call_defaults_to_empty_args(self):
+        c = Call(self._t())
+        self.assertEqual(c.args, {})
+
+    def test_route_holds_target(self):
+        self.assertEqual(Route("billing").target, "billing")
+
+    def test_final_flags(self):
+        f = Final("done", ignore_retrieval=True)
+        self.assertEqual(f.text, "done")
+        self.assertTrue(f.ignore_retrieval)
+
+    def test_malformed_and_unknown(self):
+        t = self._t()
+        self.assertIs(MalformedCall(t).tool, t)
+        self.assertEqual(UnknownToolCall("ghost_tool").name, "ghost_tool")

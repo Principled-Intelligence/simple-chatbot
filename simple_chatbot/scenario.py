@@ -61,3 +61,46 @@ def tool(func: Callable[..., dict | str]) -> ScenarioTool:
         parameters=parameters,
         func=func,
     )
+
+
+@dataclass
+class Call:
+    """A well-formed tool call. Empty `args` (omitting a required field) is the
+    deterministic required-arg-violation knob."""
+
+    tool: ScenarioTool
+    args: dict = field(default_factory=dict)
+    irrelevant: bool = False  # tag for relevance-dimension test assertions
+
+
+@dataclass
+class Route:
+    """A handoff to another agent (serialized as a `route` tool call)."""
+
+    target: str
+
+
+@dataclass
+class Final:
+    """End the turn with this assistant message."""
+
+    text: str
+    ignore_retrieval: bool = False  # tag for utilization/faithfulness assertions
+
+
+@dataclass
+class MalformedCall:
+    """Emit a call whose arguments are invalid JSON (validity knob → score 2)."""
+
+    tool: ScenarioTool
+
+
+@dataclass
+class UnknownToolCall:
+    """Emit a call to a tool absent from the catalog (validity knob → score 1)."""
+
+    name: str
+    args: dict = field(default_factory=dict)
+
+
+Step = Call | Route | Final | MalformedCall | UnknownToolCall
