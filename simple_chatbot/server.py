@@ -18,6 +18,9 @@ from simple_chatbot.responses import (
     build_response,
     normalize_input,
 )
+from simple_chatbot.scenario_orchestrator import ScenarioOrchestrator
+from simple_chatbot.scenario_provider import DeterministicProvider
+from simple_chatbot.scenario_registry import load_fixtures
 from simple_chatbot.scripted_indexer import ScriptedIndexer
 from simple_chatbot.tools import ToolDef
 
@@ -27,6 +30,7 @@ _config: SimpleChatbotConfig | None = None
 _agent: Agent | None = None
 _conversation_logger: ConversationLogger | None = None
 _response_store: ResponseStore | None = None
+_scenario_registry: dict | None = None
 
 
 def _require_config() -> SimpleChatbotConfig:
@@ -82,7 +86,7 @@ def init(
     acompletion: Callable[..., Awaitable[Any]] | None = None,
     tools: list[ToolDef] | None = None,
 ) -> None:
-    global _config, _agent, _conversation_logger, _response_store
+    global _config, _agent, _conversation_logger, _response_store, _scenario_registry
     _config = config
     gate: ScopeGuardGate | None = None
     if config.guard.enabled:
@@ -97,6 +101,7 @@ def init(
     _agent = Agent(config, indexer, gate=gate, acompletion=acompletion, tools=tools)
     _conversation_logger = ConversationLogger(config.conversation_log_dir)
     _response_store = ResponseStore()
+    _scenario_registry = load_fixtures()
     logger.bind(
         model=config.chat_model,
         top_k=config.top_k,
@@ -167,11 +172,12 @@ def _openai_error(message: str, error_type: str, param: str | None = None) -> di
 @app.get("/v1/models")
 def list_models():
     model_id = _config.chat_model if _config else "unknown"
-    logger.bind(model_id=model_id).debug("Returning model list")
-    return {
-        "object": "list",
-        "data": [{"id": model_id, "object": "model", "created": int(time.time()), "owned_by": "simple-chatbot"}],
-    }
+    created = int(time.time())
+    data = [{"id": model_id, "object": "model", "created": created, "owned_by": "simple-chatbot"}]
+    for fixture_id in sorted(_scenario_registry or {}):
+        data.append({"id": fixture_id, "object": "model", "created": created, "owned_by": "simple-chatbot-fixture"})
+    logger.bind(model_id=model_id, fixture_count=len(_scenario_registry or {})).debug("Returning model list")
+    return {"object": "list", "data": data}
 
 
 @app.post("/v1/chat/completions")
@@ -309,7 +315,13 @@ async def responses_create(request: Request, body: ResponsesRequest):
         ).info("Response create started")
 
         start = time.perf_counter()
-        result = await _require_agent().chat(messages)
+        registry = _scenario_registry or {}
+        scenario = registry.get(body.model)
+        if scenario is not None:
+            orchestrator = ScenarioOrchestrator(scenario, DeterministicProvider())
+            result = await orchestrator.chat(messages)
+        else:
+            result = await _require_agent().chat(messages)
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         payload = build_response(
