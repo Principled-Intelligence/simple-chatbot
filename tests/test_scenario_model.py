@@ -1,7 +1,7 @@
 # tests/test_scenario_model.py
 import unittest
 
-from simple_chatbot.scenario import tool, ScenarioTool, Call, Route, Final, MalformedCall, UnknownToolCall
+from simple_chatbot.scenario import Agent, Scenario, tool, ScenarioTool, Call, Route, Final, MalformedCall, UnknownToolCall
 
 
 class ToolDecoratorTests(unittest.TestCase):
@@ -70,3 +70,56 @@ class StepTypeTests(unittest.TestCase):
         t = self._t()
         self.assertIs(MalformedCall(t).tool, t)
         self.assertEqual(UnknownToolCall("ghost_tool").name, "ghost_tool")
+
+
+class ScenarioModelTests(unittest.TestCase):
+    def _tools(self):
+        @tool
+        def lookup_invoice(invoice_id: str) -> dict:
+            """Look up an invoice."""
+            return {"invoice_id": invoice_id}
+
+        @tool
+        def get_status(order_id: str) -> dict:
+            """Get order status."""
+            return {"order_id": order_id, "status": "shipped"}
+
+        return lookup_invoice, get_status
+
+    def _scenario(self):
+        inv, status = self._tools()
+        return Scenario(
+            id="demo",
+            entry="dispatcher",
+            agents=[
+                Agent("dispatcher", routes=["billing", "orders"]),
+                Agent("billing", tools=[inv]),
+                Agent("orders", tools=[status]),
+            ],
+        )
+
+    def test_agent_lookup(self):
+        s = self._scenario()
+        self.assertEqual(s.agent("billing").name, "billing")
+
+    def test_all_tools_is_union_deduped_by_name(self):
+        s = self._scenario()
+        names = sorted(t.name for t in s.all_tools())
+        self.assertEqual(names, ["get_status", "lookup_invoice"])
+
+    def test_route_targets_sorted_unique(self):
+        s = self._scenario()
+        self.assertEqual(s.route_targets(), ["billing", "orders"])
+
+    def test_validate_rejects_missing_entry(self):
+        inv, _ = self._tools()
+        with self.assertRaises(ValueError):
+            Scenario(id="x", entry="nope", agents=[Agent("a", tools=[inv])])
+
+    def test_validate_rejects_route_to_unknown_agent(self):
+        with self.assertRaises(ValueError):
+            Scenario(id="x", entry="a", agents=[Agent("a", routes=["ghost"])])
+
+    def test_validate_rejects_duplicate_agent_names(self):
+        with self.assertRaises(ValueError):
+            Scenario(id="x", entry="a", agents=[Agent("a"), Agent("a")])

@@ -104,3 +104,58 @@ class UnknownToolCall:
 
 
 Step = Call | Route | Final | MalformedCall | UnknownToolCall
+
+
+@dataclass
+class Agent:
+    name: str
+    system_prompt: str = ""
+    tools: list[ScenarioTool] = field(default_factory=list)
+    routes: list[str] = field(default_factory=list)
+    script: list[Step] = field(default_factory=list)
+    terminal: bool = False
+    escalation_message: str = ""
+
+
+@dataclass
+class Scenario:
+    id: str
+    entry: str
+    agents: list[Agent]
+    description: str = ""
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def agent(self, name: str) -> Agent:
+        for a in self.agents:
+            if a.name == name:
+                return a
+        raise KeyError(f"no agent named {name!r}")
+
+    def all_tools(self) -> list[ScenarioTool]:
+        by_name: dict[str, ScenarioTool] = {}
+        for a in self.agents:
+            for t in a.tools:
+                by_name.setdefault(t.name, t)
+        return list(by_name.values())
+
+    def route_targets(self) -> list[str]:
+        targets: set[str] = set()
+        for a in self.agents:
+            targets.update(a.routes)
+        return sorted(targets)
+
+    def validate(self) -> None:
+        names = [a.name for a in self.agents]
+        if len(names) != len(set(names)):
+            raise ValueError(f"duplicate agent names in scenario {self.id!r}")
+        name_set = set(names)
+        if self.entry not in name_set:
+            raise ValueError(f"entry agent {self.entry!r} not found in scenario {self.id!r}")
+        for a in self.agents:
+            for target in a.routes:
+                if target not in name_set:
+                    raise ValueError(
+                        f"agent {a.name!r} routes to unknown agent {target!r}"
+                    )
