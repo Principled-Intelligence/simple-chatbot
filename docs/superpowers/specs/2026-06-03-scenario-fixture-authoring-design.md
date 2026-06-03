@@ -83,7 +83,7 @@ Driving plan: `ghost-backend/docs/superpowers/specs/2026-05-29-unified-classific
 | **Authoring surface** | **Code-first builder API**, not YAML. The in-memory `Scenario` model is the orchestrator's contract; a YAML loader is a deferred optional adapter over the same model. | Reuses the existing `ToolDef` code idiom; eliminates embedding JSON Schema in YAML and a `script`-step DSL; type-checked, refactorable. |
 | **Tool schemas** | **Typed function → auto-generated JSON Schema; the function body is the deterministic stub.** | One definition, no duplication (what framework `@function_tool` decorators do, without the framework). Removes hand-written schema dicts. |
 | **Turn model** | **One turn per user message.** A whole agent-A→B→… topology collapses into ONE `/v1/responses` output array = one Spectral turn. Routing is an inline `route` tool call. | Reuses the existing ReAct flattening; per-turn windowing sees the routing decision *and* the routed sub-agent's calls together. No new wire mechanism. |
-| **Catalog channel** | **Populate the spec's `Response.tools` echo from the scenario**, and add a small `Response.tools` harvest to Spectral. | Most standards-faithful for an autonomous agent that owns its tools; self-describing traces; no per-fixture MCP framing; no manual Target registration. |
+| **Catalog channel** | **Populate the spec's `Response.tools` echo from the scenario** (this repo). The matching `Response.tools` harvest on Spectral is a **separate, last step, gated on explicit author authorization** (see Phasing). | Most standards-faithful for an autonomous agent that owns its tools; self-describing traces; no per-fixture MCP framing; no manual Target registration. The harvest is decoupled because ghost-backend may be under active concurrent work. |
 | **Scenario selection** | **`model` field = scenario id.** One server loads a fixtures package; `/v1/responses` resolves the scenario from `body.model`; `/v1/models` lists fixture ids. | Maps cleanly onto how a Spectral Target already configures a model. |
 | **Framework use** | **Own deterministic engine; pluggable `Provider` seam for a framework-backed live provider (deferred).** | The misbehavior knobs deliberately emit *invalid* traces (malformed args, unknown tool, required-violation) — exactly what frameworks validate away. We own the server/serialization always. |
 
@@ -239,7 +239,12 @@ relevance).
 `canonical_tool_id(target_id, fp)`, `source="declared"`). Function calls resolve
 by name fallback; `route` resolves by name `"route"`. This is the only
 ghost-backend change and is additive (the existing `declared_tools` +
-`mcp_list_tools` channels are untouched).
+`mcp_list_tools` channels are untouched). **It is the last step of the plan,
+done asynchronously, and must not be started until the author explicitly
+authorizes touching ghost-backend** — that repo may be under active concurrent
+work. Until it lands, a fixture's catalog can be registered via the Target's
+`declared_tools` as a fallback, so the simple-chatbot work is fully verifiable
+without it.
 
 ## Misbehavior knobs (step-level, deterministic-guaranteed)
 
@@ -282,21 +287,32 @@ Mode is chosen by a per-scenario default plus a server/env override.
 - **E2E:** drive `/v1/responses` by `model`; multi-turn chaining; mimic Spectral
   normalization to assert `tool_catalog` is populated **and** the per-turn window
   contains routing + sub-agent calls.
-- **Cross-repo (Spectral):** `Response.tools` harvest test — catalog populated
-  from a trace with no `mcp_list_tools` and no declared Target tools.
+- **Cross-repo (Spectral), final gated step only:** `Response.tools` harvest
+  test — catalog populated from a trace with no `mcp_list_tools` and no declared
+  Target tools.
 - **Golden traces:** snapshot deterministic output for canonical fixtures
   (`cs-routing`, `parallel`, `rag-ignore`) to lock reproducibility.
 
 ## Phasing (within this one spec)
 
-1. **Phase 1 — canonical fixture path end-to-end:** `scenario.py` model +
-   builder API + `@tool` + `orchestrator.py` + `DeterministicProvider` +
-   `catalog.py` + server selection + the Spectral `Response.tools` harvest + 1–2
-   canonical fixtures + tests.
-2. **Phase 2 — live mode:** `LiveProvider` (litellm per round, scoped tools);
-   decide whether to back it with the OpenAI Agents SDK.
-3. **Phase 3 — knob/fixture library:** parallel calls, multi-round routing,
-   RAG-ignore, escalation, and the remaining misbehavior fixtures.
+All simple-chatbot phases are self-contained: the server emits `Response.tools`
+from Phase 1, and a fixture's catalog can be registered via the Target's
+`declared_tools` until the Spectral harvest lands — so every phase below is
+fully implementable and verifiable **without** touching ghost-backend.
+
+1. **Phase 1 — canonical fixture path end-to-end (this repo):** `scenario.py`
+   model + builder API + `@tool` + `orchestrator.py` + `DeterministicProvider` +
+   `catalog.py` (emit `Response.tools`) + server selection + 1–2 canonical
+   fixtures + tests.
+2. **Phase 2 — live mode (this repo):** `LiveProvider` (litellm per round, scoped
+   tools); decide whether to back it with the OpenAI Agents SDK.
+3. **Phase 3 — knob/fixture library (this repo):** parallel calls, multi-round
+   routing, RAG-ignore, escalation, and the remaining misbehavior fixtures.
+4. **Phase 4 — Spectral `Response.tools` harvest (ghost-backend), LAST + GATED:**
+   the single cross-repo change. Done **asynchronously** after the rest is
+   implemented, and **only once the author explicitly authorizes** touching
+   ghost-backend (it may be under active concurrent work). Additive; the existing
+   catalog channels are untouched.
 
 ## Open seams & notes
 
@@ -305,10 +321,11 @@ Mode is chosen by a per-scenario default plus a server/env override.
   store's `session_messages` entry — deferred.
 - **YAML adapter.** The in-memory `Scenario` model is the contract; a YAML loader
   producing the same model can be added later with zero orchestrator change.
-- **`Response.tools` vs Spectral harvest ordering.** The emit side (this repo)
-  and the harvest side (ghost-backend) ship together in Phase 1; until the
-  harvest lands, a fixture's catalog can still be registered via the Target's
-  `declared_tools` as a fallback.
+- **`Response.tools` vs Spectral harvest ordering.** The emit side (this repo,
+  Phase 1) and the harvest side (ghost-backend, Phase 4) are **decoupled**: the
+  harvest is a last, author-gated, async step. Until it lands, a fixture's
+  catalog is registered via the Target's `declared_tools` as a fallback, so the
+  simple-chatbot phases stand alone.
 - **Existing scripted mode.** [scripted_llm.py](../../../simple_chatbot/scripted_llm.py)
   and its `EXHAUSTIVE_TOOL_USE` rotation remain for the single-agent scripted
   path; the scenario engine is the multi-agent successor, not a replacement of
