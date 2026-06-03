@@ -1,0 +1,115 @@
+# tests/test_scenario_orchestrator.py
+import asyncio
+import json
+import unittest
+
+from simple_chatbot.scenario import Agent, Call, Final, MalformedCall, Route, Scenario, UnknownToolCall, tool
+from simple_chatbot.scenario_provider import DeterministicProvider
+from simple_chatbot.scenario_orchestrator import ScenarioOrchestrator
+
+
+@tool
+def lookup_invoice(invoice_id: str) -> dict:
+    """Look up an invoice."""
+    return {"invoice_id": invoice_id, "amount_due": "42.00"}
+
+
+def _run(scenario, messages):
+    orch = ScenarioOrchestrator(scenario, DeterministicProvider())
+    return asyncio.run(orch.chat(messages))
+
+
+class OrchestratorRoutingTests(unittest.TestCase):
+    def _scenario(self):
+        return Scenario(
+            id="cs",
+            entry="dispatcher",
+            agents=[
+                Agent("dispatcher", routes=["billing"], script=[Route("billing")]),
+                Agent(
+                    "billing",
+                    tools=[lookup_invoice],
+                    script=[Call(lookup_invoice, {"invoice_id": "INV-1"}), Final("Refunded.")],
+                ),
+            ],
+        )
+
+    def test_one_turn_collapses_route_and_subagent_calls(self):
+        result = _run(self._scenario(), [{"role": "user", "content": "refund please"}])
+        self.assertEqual(result.content, "Refunded.")
+        roles_and_names = [
+            (m["role"], m.get("name") or (m["tool_calls"][0]["function"]["name"] if m.get("tool_calls") else None))
+            for m in result.tool_messages
+        ]
+        # assistant(route) → tool(route) → assistant(lookup) → tool(lookup)
+        self.assertEqual(
+            roles_and_names,
+            [("assistant", "route"), ("tool", "route"),
+             ("assistant", "lookup_invoice"), ("tool", "lookup_invoice")],
+        )
+
+    def test_route_output_and_handoff(self):
+        result = _run(self._scenario(), [{"role": "user", "content": "x"}])
+        route_out = next(m for m in result.tool_messages if m["role"] == "tool" and m["name"] == "route")
+        self.assertEqual(json.loads(route_out["content"]), {"routed": True, "agent": "billing"})
+
+    def test_stable_call_ids(self):
+        msgs = [{"role": "user", "content": "x"}]
+        r1 = _run(self._scenario(), msgs)
+        r2 = _run(self._scenario(), msgs)
+        ids1 = [m["tool_call_id"] for m in r1.tool_messages if m["role"] == "tool"]
+        ids2 = [m["tool_call_id"] for m in r2.tool_messages if m["role"] == "tool"]
+        self.assertEqual(ids1, ids2)
+        self.assertEqual(ids1, ["call_cs_1_1", "call_cs_1_2"])
+
+    def test_responses_tools_attached(self):
+        result = _run(self._scenario(), [{"role": "user", "content": "x"}])
+        names = {e["name"] for e in result.responses_tools}
+        self.assertEqual(names, {"lookup_invoice", "route"})
+
+
+class OrchestratorTerminalTests(unittest.TestCase):
+    def test_terminal_agent_emits_escalation_final(self):
+        s = Scenario(
+            id="esc",
+            entry="dispatcher",
+            agents=[
+                Agent("dispatcher", routes=["human"], script=[Route("human")]),
+                Agent("human", terminal=True, escalation_message="Escalating to a human."),
+            ],
+        )
+        result = _run(s, [{"role": "user", "content": "help"}])
+        self.assertEqual(result.content, "Escalating to a human.")
+
+
+class OrchestratorKnobTests(unittest.TestCase):
+    def test_malformed_args_surface_as_tool_error(self):
+        s = Scenario(
+            id="k",
+            entry="a",
+            agents=[Agent("a", tools=[lookup_invoice],
+                          script=[MalformedCall(lookup_invoice), Final("ok")])],
+        )
+        result = _run(s, [{"role": "user", "content": "x"}])
+        out = next(m for m in result.tool_messages if m["role"] == "tool")
+        self.assertIn("Tool error", out["content"])
+        # the malformed args are still present on the call (for validity scoring)
+        call = next(m for m in result.tool_messages if m["role"] == "assistant")
+        self.assertEqual(call["tool_calls"][0]["function"]["arguments"], "{intentionally_malformed_json")
+
+    def test_unknown_tool_surface_as_tool_error(self):
+        s = Scenario(id="k", entry="a",
+                     agents=[Agent("a", script=[UnknownToolCall("ghost"), Final("ok")])])
+        result = _run(s, [{"role": "user", "content": "x"}])
+        out = next(m for m in result.tool_messages if m["role"] == "tool")
+        self.assertIn("unsupported tool 'ghost'", out["content"])
+
+    def test_required_violation_keeps_empty_args_and_errors(self):
+        s = Scenario(id="k", entry="a",
+                     agents=[Agent("a", tools=[lookup_invoice],
+                                   script=[Call(lookup_invoice), Final("ok")])])
+        result = _run(s, [{"role": "user", "content": "x"}])
+        call = next(m for m in result.tool_messages if m["role"] == "assistant")
+        self.assertEqual(call["tool_calls"][0]["function"]["arguments"], "{}")
+        out = next(m for m in result.tool_messages if m["role"] == "tool")
+        self.assertIn("Tool error", out["content"])
