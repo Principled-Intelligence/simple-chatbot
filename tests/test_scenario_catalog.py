@@ -3,6 +3,8 @@ import unittest
 
 from simple_chatbot.scenario import Agent, Scenario, tool
 from simple_chatbot.scenario_catalog import build_responses_tools
+from simple_chatbot.agent import ChatResult
+from simple_chatbot.responses import build_response
 
 
 @tool
@@ -44,3 +46,29 @@ class CatalogTests(unittest.TestCase):
         s = Scenario(id="x", entry="a", agents=[Agent("a", tools=[lookup_invoice])])
         names = [e["name"] for e in build_responses_tools(s)]
         self.assertNotIn("route", names)
+
+
+class BuildResponseToolsTests(unittest.TestCase):
+    def test_response_tools_populated_from_result(self):
+        result = ChatResult(
+            content="done",
+            retrieved_chunks=[],
+            responses_tools=[
+                {"type": "function", "name": "route",
+                 "parameters": {"type": "object", "properties": {}}}
+            ],
+        )
+        payload = build_response(
+            result=result,
+            model="fixture:demo",
+            previous_response_id=None,
+            conversation_id="conv-1",
+        )
+        self.assertEqual(payload["tools"][0]["name"], "route")
+
+    def test_response_tools_default_empty(self):
+        result = ChatResult(content="done", retrieved_chunks=[])
+        payload = build_response(
+            result=result, model="m", previous_response_id=None, conversation_id="c"
+        )
+        self.assertEqual(payload["tools"], [])

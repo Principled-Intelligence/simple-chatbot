@@ -200,6 +200,7 @@ def build_response(
     payload["output"] = build_output_items(result)
     # Ensure created_at is an int (the SDK model uses float internally).
     payload["created_at"] = int(payload["created_at"])
+    payload["tools"] = result.responses_tools
     # Non-standard extension we add at the envelope level (same as chat completions).
     payload["conversation_id"] = conversation_id
     return payload

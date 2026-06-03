@@ -70,6 +70,7 @@ class ChatResult:
     usage: dict = field(default_factory=lambda: {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
     final_messages: list[dict] = field(default_factory=list)
     final_reasoning_content: str | None = None
+    responses_tools: list[dict] = field(default_factory=list)
 
 
 class Agent:
