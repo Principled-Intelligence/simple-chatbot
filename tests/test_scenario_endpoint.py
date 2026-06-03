@@ -70,3 +70,27 @@ class ScenarioEndpointTests(unittest.TestCase):
         ids = {m["id"] for m in resp.json()["data"]}
         self.assertIn("cs-routing", ids)
         self.assertIn("validity-probe", ids)
+
+
+class ScenarioTraceShapeTests(ScenarioEndpointTests):
+    def test_turn_window_has_route_then_subagent_calls(self):
+        resp = self.client.post("/v1/responses", json={"model": "cs-routing", "input": "refund"})
+        body = resp.json()
+        # Emulate Spectral's per-turn windowing: one user message in => one turn;
+        # the output array IS that turn's window. Extract ordered tool-call names.
+        call_names = [
+            it["name"] for it in body["output"] if it["type"] == "function_call"
+        ]
+        self.assertEqual(call_names[0], "route")  # routing decision is in-window
+        self.assertIn("lookup_invoice", call_names)  # routed sub-agent's call too
+        # function_call_output items are paired and present
+        out_types = [it["type"] for it in body["output"]]
+        self.assertIn("function_call_output", out_types)
+
+    def test_catalog_resolves_calls_by_name(self):
+        resp = self.client.post("/v1/responses", json={"model": "cs-routing", "input": "refund"})
+        body = resp.json()
+        catalog_names = {t["name"] for t in body["tools"]}
+        call_names = {it["name"] for it in body["output"] if it["type"] == "function_call"}
+        # every emitted call resolves to a catalog entry by name (validity precondition)
+        self.assertTrue(call_names.issubset(catalog_names))
