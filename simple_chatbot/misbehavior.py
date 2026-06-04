@@ -11,6 +11,7 @@ calls — pure, with no I/O.
 from __future__ import annotations
 
 import random
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 # Mode vocabulary, grouped by the pipeline site that can inject them.
@@ -57,12 +58,15 @@ class Injection:
 
 
 class MisbehaviorPolicy:
+    """Seeded decision-maker: consulted at each injection site, it fires per
+    `rate`, picks an enabled mode, logs it, and returns the `Injection`."""
+
     def __init__(self, config: MisbehaviorConfig) -> None:
         self.config = config
         self._rng = random.Random(config.seed)
         self._log: list[Injection] = []
 
-    def maybe(self, stage: str, eligible_modes, ctx: dict | None = None) -> Injection | None:
+    def maybe(self, stage: str, eligible_modes: Iterable[str], ctx: dict | None = None) -> Injection | None:
         ctx = ctx or {}
         enabled = [m for m in eligible_modes if m in self.config.modes]
         if not enabled:
