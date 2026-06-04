@@ -94,6 +94,7 @@ class ChatResult:
     final_messages: list[dict] = field(default_factory=list)
     final_reasoning_content: str | None = None
     responses_tools: list[dict] = field(default_factory=list)
+    active_agent: str | None = None
 
 
 class Agent:

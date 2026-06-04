@@ -15,7 +15,7 @@ import json
 from loguru import logger
 
 from simple_chatbot.agent import ChatResult
-from simple_chatbot.scenario import ROUTE_TOOL_NAME, Scenario
+from simple_chatbot.scenario import ROUTE_TOOL_NAME, Agent as ScenarioAgent, Scenario
 from simple_chatbot.scenario_catalog import build_responses_tools
 from simple_chatbot.scenario_provider import DeterministicProvider, ProviderDecision
 from simple_chatbot.tools import _parse_args
@@ -33,61 +33,65 @@ class ScenarioOrchestrator:
         self.max_rounds = max_rounds
         self._tools_by_name = {t.name: t for t in scenario.all_tools()}
 
-    async def chat(self, messages: list[dict]) -> ChatResult:
+    async def chat(self, messages: list[dict], start_agent: str | None = None) -> ChatResult:
         turn_idx = sum(1 for m in messages if m.get("role") == "user")
-        active = self.scenario.agent(self.scenario.entry)
+        active = self._resolve_start(start_agent)
         tool_messages: list[dict] = []
         content = ""
         seq = 0
 
-        for _round in range(self.max_rounds):
-            decision: ProviderDecision = await self.provider.decide(
-                active, messages=messages, tool_messages=tool_messages
-            )
-
-            if decision.final is not None and not decision.calls:
-                content = decision.final
-                break
-
-            tool_calls: list[dict] = []
-            for pc in decision.calls:
-                seq += 1
-                call_id = f"call_{self.scenario.id}_{turn_idx}_{seq}"
-                tool_calls.append(
-                    {
-                        "id": call_id,
-                        "type": "function",
-                        "function": {"name": pc.name, "arguments": pc.arguments},
-                    }
+        if active.terminal:
+            # Resuming directly into a terminal agent re-emits its escalation
+            # and ends the turn (no rounds run).
+            content = active.escalation_message or "(escalated)"
+        else:
+            for _round in range(self.max_rounds):
+                decision: ProviderDecision = await self.provider.decide(
+                    active, messages=messages, tool_messages=tool_messages
                 )
 
-            assistant_msg: dict = {"role": "assistant", "content": None, "tool_calls": tool_calls}
-            if decision.reasoning:
-                assistant_msg["reasoning_content"] = decision.reasoning
-            tool_messages.append(assistant_msg)
-
-            switch_to: str | None = None
-            for tc in tool_calls:
-                name = tc["function"]["name"]
-                raw = tc["function"]["arguments"]
-                output, target = self._execute(active, name, raw)
-                if target is not None:
-                    switch_to = target
-                tool_messages.append(
-                    {"role": "tool", "tool_call_id": tc["id"], "name": name, "content": output}
-                )
-
-            if switch_to is not None:
-                active = self.scenario.agent(switch_to)
-                if active.terminal:
-                    content = active.escalation_message or "(escalated)"
+                if decision.final is not None and not decision.calls:
+                    content = decision.final
                     break
 
-        else:
-            content = content or "(max rounds reached)"
-            logger.bind(scenario=self.scenario.id).warning(
-                "Scenario reached max rounds without a final answer"
-            )
+                tool_calls: list[dict] = []
+                for pc in decision.calls:
+                    seq += 1
+                    call_id = f"call_{self.scenario.id}_{turn_idx}_{seq}"
+                    tool_calls.append(
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {"name": pc.name, "arguments": pc.arguments},
+                        }
+                    )
+
+                assistant_msg: dict = {"role": "assistant", "content": None, "tool_calls": tool_calls}
+                if decision.reasoning:
+                    assistant_msg["reasoning_content"] = decision.reasoning
+                tool_messages.append(assistant_msg)
+
+                switch_to: str | None = None
+                for tc in tool_calls:
+                    name = tc["function"]["name"]
+                    raw = tc["function"]["arguments"]
+                    output, target = self._execute(active, name, raw)
+                    if target is not None:
+                        switch_to = target
+                    tool_messages.append(
+                        {"role": "tool", "tool_call_id": tc["id"], "name": name, "content": output}
+                    )
+
+                if switch_to is not None:
+                    active = self.scenario.agent(switch_to)
+                    if active.terminal:
+                        content = active.escalation_message or "(escalated)"
+                        break
+            else:
+                content = content or "(max rounds reached)"
+                logger.bind(scenario=self.scenario.id).warning(
+                    "Scenario reached max rounds without a final answer"
+                )
 
         final_messages = list(messages) + tool_messages + [{"role": "assistant", "content": content}]
         return ChatResult(
@@ -96,7 +100,20 @@ class ScenarioOrchestrator:
             tool_messages=tool_messages,
             final_messages=final_messages,
             responses_tools=build_responses_tools(self.scenario),
+            active_agent=active.name,
         )
+
+    def _resolve_start(self, start_agent: str | None) -> ScenarioAgent:
+        """Resolve the agent a turn starts in: the requested resume agent when
+        valid, else the scenario's entry agent."""
+        if start_agent is not None:
+            try:
+                return self.scenario.agent(start_agent)
+            except KeyError:
+                logger.bind(
+                    scenario=self.scenario.id, start_agent=start_agent
+                ).warning("Unknown start_agent; falling back to entry")
+        return self.scenario.agent(self.scenario.entry)
 
     def _execute(self, active, name: str, raw: str) -> tuple[str, str | None]:
         """Return (output_text, switch_target). switch_target is set only for a

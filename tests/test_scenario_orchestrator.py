@@ -113,3 +113,71 @@ class OrchestratorKnobTests(unittest.TestCase):
         self.assertEqual(call["tool_calls"][0]["function"]["arguments"], "{}")
         out = next(m for m in result.tool_messages if m["role"] == "tool")
         self.assertIn("Tool error", out["content"])
+
+
+class OrchestratorResumeTests(unittest.TestCase):
+    def _scenario(self):
+        return Scenario(
+            id="cs",
+            entry="dispatcher",
+            agents=[
+                Agent("dispatcher", routes=["billing", "human"], script=[Route("billing")]),
+                Agent(
+                    "billing",
+                    tools=[lookup_invoice],
+                    script=[Call(lookup_invoice, {"invoice_id": "INV-1"}), Final("Refunded.")],
+                ),
+                Agent("human", terminal=True, escalation_message="Escalating to a human."),
+            ],
+        )
+
+    def _run(self, scenario, messages, start_agent=None):
+        orch = ScenarioOrchestrator(scenario, DeterministicProvider())
+        return asyncio.run(orch.chat(messages, start_agent=start_agent))
+
+    def test_reports_active_agent_at_turn_end(self):
+        result = self._run(self._scenario(), [{"role": "user", "content": "x"}])
+        self.assertEqual(result.active_agent, "billing")
+
+    def test_resume_starts_in_given_agent_without_routing(self):
+        result = self._run(
+            self._scenario(), [{"role": "user", "content": "x"}], start_agent="billing"
+        )
+        call_names = [
+            m["tool_calls"][0]["function"]["name"]
+            for m in result.tool_messages
+            if m["role"] == "assistant" and m.get("tool_calls")
+        ]
+        self.assertNotIn("route", call_names)  # did NOT re-enter dispatcher
+        self.assertEqual(call_names[0], "lookup_invoice")
+        self.assertEqual(result.content, "Refunded.")
+        self.assertEqual(result.active_agent, "billing")
+
+    def test_unknown_start_agent_falls_back_to_entry(self):
+        result = self._run(
+            self._scenario(), [{"role": "user", "content": "x"}], start_agent="ghost"
+        )
+        first_call = next(
+            m["tool_calls"][0]["function"]["name"]
+            for m in result.tool_messages
+            if m["role"] == "assistant" and m.get("tool_calls")
+        )
+        self.assertEqual(first_call, "route")  # entry dispatcher ran
+
+    def test_resume_into_terminal_reemits_escalation(self):
+        result = self._run(
+            self._scenario(), [{"role": "user", "content": "x"}], start_agent="human"
+        )
+        self.assertEqual(result.content, "Escalating to a human.")
+        self.assertEqual(result.tool_messages, [])  # no rounds executed
+        self.assertEqual(result.active_agent, "human")
+
+    def test_chat_without_start_agent_unchanged(self):
+        # default path (no start_agent) still enters the entry agent
+        result = self._run(self._scenario(), [{"role": "user", "content": "x"}])
+        first_call = next(
+            m["tool_calls"][0]["function"]["name"]
+            for m in result.tool_messages
+            if m["role"] == "assistant" and m.get("tool_calls")
+        )
+        self.assertEqual(first_call, "route")
