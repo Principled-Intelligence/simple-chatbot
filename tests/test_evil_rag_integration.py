@@ -109,5 +109,54 @@ class GoodVsEvilPairTests(unittest.TestCase):
             self.assertEqual(run(), run())
 
 
+import simple_chatbot.server as server
+from fastapi.testclient import TestClient
+
+
+class _FakeConversationLogger:
+    async def log(self, conversation_id, messages, response, chunks) -> None:
+        return None
+
+
+class EvilServerWiringTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.old = (
+            server._config, server._agent, server._conversation_logger,
+            getattr(server, "_response_store", None),
+            getattr(server, "_scenario_registry", None),
+            getattr(server, "_acompletion", None),
+            getattr(server, "_misbehavior_policy", None),
+        )
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        (server._config, server._agent, server._conversation_logger,
+         server._response_store, server._scenario_registry, server._acompletion,
+         server._misbehavior_policy) = self.old
+
+    def test_init_enables_evil_agent_and_endpoint_surfaces_labels(self):
+        from simple_chatbot.config import SimpleChatbotConfig
+        from simple_chatbot.scenario_registry import load_fixtures
+
+        cfg = SimpleChatbotConfig(
+            docs_dir=Path(self.tmp.name) / "docs",
+            conversation_log_dir=Path(self.tmp.name) / "conversations",
+            misbehavior_rate=1.0,
+            misbehavior_modes=["drop_retrieval"],
+            misbehavior_seed=3,
+        )
+        server.init(cfg, _FakeIndexer(), acompletion=_scripted_acompletion)
+        server._conversation_logger = _FakeConversationLogger()
+        client = TestClient(server.app)
+
+        resp = client.post("/v1/responses", json={"input": "refund window?"})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        modes = [i["mode"] for i in body.get("misbehavior_injections", [])]
+        self.assertIn("drop_retrieval", modes)
+
+
 if __name__ == "__main__":
     unittest.main()

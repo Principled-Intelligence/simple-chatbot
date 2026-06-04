@@ -25,6 +25,8 @@ from simple_chatbot.scenario_provider import DeterministicProvider, LiveProvider
 from simple_chatbot.scenario_registry import load_fixtures
 from simple_chatbot.scripted_indexer import ScriptedIndexer
 from simple_chatbot.tools import ToolDef
+from simple_chatbot.evil_rag import build_evil_agent
+from simple_chatbot.misbehavior import MisbehaviorConfig, MisbehaviorPolicy
 
 app = FastAPI(title="simple-chatbot")
 
@@ -34,6 +36,7 @@ _conversation_logger: ConversationLogger | None = None
 _response_store: ResponseStore | None = None
 _scenario_registry: dict | None = None
 _acompletion: Callable[..., Awaitable[Any]] | None = None
+_misbehavior_policy: MisbehaviorPolicy | None = None
 
 
 def _require_config() -> SimpleChatbotConfig:
@@ -89,7 +92,7 @@ def init(
     acompletion: Callable[..., Awaitable[Any]] | None = None,
     tools: list[ToolDef] | None = None,
 ) -> None:
-    global _config, _agent, _conversation_logger, _response_store, _scenario_registry, _acompletion
+    global _config, _agent, _conversation_logger, _response_store, _scenario_registry, _acompletion, _misbehavior_policy
     _config = config
     _acompletion = acompletion
     gate: ScopeGuardGate | None = None
@@ -103,6 +106,21 @@ def init(
             block_classes=config.guard.block_classes,
         ).info("Scope guard enabled")
     _agent = Agent(config, indexer, gate=gate, acompletion=acompletion, tools=tools)
+    _misbehavior_policy = None
+    if config.misbehavior_rate and config.misbehavior_rate > 0 and config.misbehavior_modes:
+        _misbehavior_policy = MisbehaviorPolicy(
+            MisbehaviorConfig(
+                rate=config.misbehavior_rate,
+                modes=tuple(config.misbehavior_modes),
+                seed=config.misbehavior_seed,
+            )
+        )
+        _agent = build_evil_agent(
+            config, indexer, _misbehavior_policy, acompletion=acompletion, gate=gate
+        )
+        logger.bind(
+            rate=config.misbehavior_rate, modes=config.misbehavior_modes
+        ).warning("Misbehavior injection ENABLED — evil RAG agent active (not for production)")
     _conversation_logger = ConversationLogger(config.conversation_log_dir)
     _response_store = ResponseStore()
     _scenario_registry = load_fixtures()
@@ -358,7 +376,11 @@ async def responses_create(request: Request, body: ResponsesRequest):
             )
             result = await orchestrator.chat(messages, start_agent=start_agent)
         else:
+            before = len(_misbehavior_policy.injections) if _misbehavior_policy else 0
             result = await _require_agent().chat(messages)
+            new_injections = (
+                _misbehavior_policy.injections[before:] if _misbehavior_policy else []
+            )
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         payload = build_response(
@@ -367,6 +389,11 @@ async def responses_create(request: Request, body: ResponsesRequest):
             previous_response_id=body.previous_response_id,
             conversation_id=conversation_id,
         )
+
+        if scenario is None and new_injections:
+            from dataclasses import asdict
+
+            payload["misbehavior_injections"] = [asdict(i) for i in new_injections]
 
         logger.bind(
             response_id=payload["id"],
