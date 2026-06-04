@@ -9,6 +9,7 @@ from simple_chatbot.scenario import (
     Call,
     Final,
     MalformedCall,
+    Parallel,
     Route,
     UnknownToolCall,
     tool,
@@ -170,3 +171,38 @@ class LiveProviderTests(unittest.TestCase):
         self.assertIsNotNone(d.final)
         self.assertIn("boom", d.final)
         self.assertFalse(d.calls)
+
+
+class ParallelDecisionTests(unittest.TestCase):
+    def test_parallel_yields_multiple_calls_in_order(self):
+        agent = Agent(
+            "a",
+            tools=[lookup_invoice],
+            script=[
+                Parallel([
+                    Call(lookup_invoice, {"invoice_id": "INV-1"}),
+                    Call(lookup_invoice, {"invoice_id": "INV-2"}),
+                ]),
+            ],
+        )
+        d = _decide(DeterministicProvider(), agent)
+        self.assertIsNone(d.final)
+        self.assertEqual([c.name for c in d.calls], ["lookup_invoice", "lookup_invoice"])
+        self.assertEqual(json.loads(d.calls[0].arguments), {"invoice_id": "INV-1"})
+        self.assertEqual(json.loads(d.calls[1].arguments), {"invoice_id": "INV-2"})
+
+    def test_parallel_mixes_valid_and_malformed(self):
+        agent = Agent(
+            "a",
+            tools=[lookup_invoice],
+            script=[Parallel([Call(lookup_invoice, {"invoice_id": "INV-1"}), MalformedCall(lookup_invoice)])],
+        )
+        d = _decide(DeterministicProvider(), agent)
+        self.assertEqual(len(d.calls), 2)
+        self.assertEqual(d.calls[1].arguments, "{intentionally_malformed_json")
+
+    def test_single_call_still_one_element(self):
+        agent = Agent("a", tools=[lookup_invoice], script=[Call(lookup_invoice, {"invoice_id": "INV-1"})])
+        d = _decide(DeterministicProvider(), agent)
+        self.assertEqual(len(d.calls), 1)
+        self.assertEqual(d.calls[0].name, "lookup_invoice")

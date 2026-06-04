@@ -19,6 +19,7 @@ from simple_chatbot.scenario import (
     Call,
     Final,
     MalformedCall,
+    Parallel,
     Route,
     UnknownToolCall,
 )
@@ -26,6 +27,17 @@ from simple_chatbot.scenario import (
 # Invalid-JSON string used for the malformed-args knob. Mirrors the marker the
 # existing scripted_llm uses for the same purpose.
 _MALFORMED_ARGS = "{intentionally_malformed_json"
+
+
+def _planned_call(step) -> "PlannedCall":
+    """Map a single call-family step to a PlannedCall."""
+    if isinstance(step, Call):
+        return PlannedCall(step.tool.name, json.dumps(step.args))
+    if isinstance(step, MalformedCall):
+        return PlannedCall(step.tool.name, _MALFORMED_ARGS)
+    if isinstance(step, UnknownToolCall):
+        return PlannedCall(step.name, json.dumps(step.args))
+    raise ValueError(f"not a call-family step: {type(step).__name__}")
 
 
 @dataclass
@@ -66,16 +78,10 @@ class DeterministicProvider:
             return ProviderDecision(
                 calls=[PlannedCall("route", json.dumps({"agent": step.target}))]
             )
-        if isinstance(step, Call):
-            return ProviderDecision(
-                calls=[PlannedCall(step.tool.name, json.dumps(step.args))]
-            )
-        if isinstance(step, MalformedCall):
-            return ProviderDecision(calls=[PlannedCall(step.tool.name, _MALFORMED_ARGS)])
-        if isinstance(step, UnknownToolCall):
-            return ProviderDecision(
-                calls=[PlannedCall(step.name, json.dumps(step.args))]
-            )
+        if isinstance(step, (Call, MalformedCall, UnknownToolCall)):
+            return ProviderDecision(calls=[_planned_call(step)])
+        if isinstance(step, Parallel):
+            return ProviderDecision(calls=[_planned_call(s) for s in step.steps])
         return ProviderDecision(final="(unknown step)")
 
 
