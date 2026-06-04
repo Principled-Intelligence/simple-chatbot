@@ -14,6 +14,7 @@ import json
 from dataclasses import dataclass, field
 
 from simple_chatbot.scenario import (
+    ROUTE_TOOL_NAME,
     Agent,
     Call,
     Final,
@@ -76,3 +77,98 @@ class DeterministicProvider:
                 calls=[PlannedCall(step.name, json.dumps(step.args))]
             )
         return ProviderDecision(final="(unknown step)")
+
+
+class LiveProvider:
+    """Model-driven provider: calls `acompletion` once per round with the active
+    agent's system prompt + scoped tools, ignoring the authored `script`.
+
+    Tools are offered in the NESTED Chat-Completions shape
+    `{type, function: {name, description, parameters}}` (what litellm's `tools=`
+    expects) — distinct from the flat `Response.tools` catalog shape. The `route`
+    tool's enum is the ACTIVE agent's own routes, not the scenario-wide union.
+    """
+
+    def __init__(
+        self,
+        acompletion,
+        model: str,
+        api_base: str | None = None,
+        sampling_kwargs: dict | None = None,
+    ) -> None:
+        self._acompletion = acompletion
+        self._model = model
+        self._api_base = api_base
+        self._sampling_kwargs = sampling_kwargs or {}
+
+    def _offered_tools(self, agent: Agent) -> list[dict]:
+        tools: list[dict] = [
+            {
+                "type": "function",
+                "function": {
+                    "name": t.name,
+                    "description": t.description,
+                    "parameters": t.parameters,
+                },
+            }
+            for t in agent.tools
+        ]
+        if agent.routes:
+            tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": ROUTE_TOOL_NAME,
+                        "description": "Hand off the request to another agent.",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {
+                                "agent": {"type": "string", "enum": list(agent.routes)}
+                            },
+                            "required": ["agent"],
+                        },
+                    },
+                }
+            )
+        return tools
+
+    async def decide(
+        self, agent: Agent, messages: list[dict], tool_messages: list[dict]
+    ) -> ProviderDecision:
+        working: list[dict] = []
+        if agent.system_prompt:
+            working.append({"role": "system", "content": agent.system_prompt})
+        working.extend(messages)
+        working.extend(tool_messages)
+
+        kwargs: dict = {
+            "model": self._model,
+            "messages": working,
+            "tools": self._offered_tools(agent),
+            "tool_choice": "auto",
+        }
+        if self._api_base:
+            kwargs["api_base"] = self._api_base
+        kwargs.update(self._sampling_kwargs)
+
+        try:
+            response = await self._acompletion(**kwargs)
+        except Exception as exc:  # live is best-effort: degrade, don't 500
+            return ProviderDecision(final=f"(live provider error: {exc})")
+
+        choice = response.choices[0]
+        msg = choice.message
+        reasoning = getattr(msg, "reasoning_content", None)
+        tool_calls = getattr(msg, "tool_calls", None)
+        if choice.finish_reason == "tool_calls" and tool_calls:
+            calls = []
+            for tc in tool_calls:
+                fn = getattr(tc, "function", None)
+                calls.append(
+                    PlannedCall(
+                        name=getattr(fn, "name", None),
+                        arguments=getattr(fn, "arguments", "{}"),
+                    )
+                )
+            return ProviderDecision(calls=calls, reasoning=reasoning)
+        return ProviderDecision(final=(msg.content or ""), reasoning=reasoning)

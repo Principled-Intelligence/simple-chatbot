@@ -3,8 +3,17 @@ import asyncio
 import json
 import unittest
 
-from simple_chatbot.scenario import Agent, Call, Final, MalformedCall, Route, UnknownToolCall, tool
-from simple_chatbot.scenario_provider import DeterministicProvider
+from simple_chatbot.scenario import (
+    ROUTE_TOOL_NAME,
+    Agent,
+    Call,
+    Final,
+    MalformedCall,
+    Route,
+    UnknownToolCall,
+    tool,
+)
+from simple_chatbot.scenario_provider import DeterministicProvider, LiveProvider
 
 
 @tool
@@ -64,3 +73,100 @@ class DeterministicProviderTests(unittest.TestCase):
         p = DeterministicProvider()
         self.assertEqual(_decide(p, a).calls[0].name, "route")
         self.assertEqual(_decide(p, b).final, "b-done")
+
+
+class _Function:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
+
+
+class _ToolCall:
+    def __init__(self, name, arguments):
+        self.function = _Function(name, arguments)
+
+
+class _Message:
+    def __init__(self, content="", tool_calls=None, reasoning_content=None):
+        self.content = content
+        self.tool_calls = tool_calls or []
+        self.reasoning_content = reasoning_content
+
+
+class _Choice:
+    def __init__(self, message, finish_reason):
+        self.message = message
+        self.finish_reason = finish_reason
+
+
+class _Response:
+    def __init__(self, message, finish_reason):
+        self.choices = [_Choice(message, finish_reason)]
+        self.usage = None
+
+
+def _live(captured, response=None, raises=None):
+    async def fake_acompletion(**kwargs):
+        captured.update(kwargs)
+        if raises is not None:
+            raise raises
+        return response
+    return LiveProvider(acompletion=fake_acompletion, model="test-model")
+
+
+class LiveProviderTests(unittest.TestCase):
+    def test_offers_only_active_agent_scoped_tools_nested_shape(self):
+        agent = Agent(
+            "billing",
+            system_prompt="You handle billing.",
+            tools=[lookup_invoice],
+            routes=["human"],
+        )
+        captured: dict = {}
+        provider = _live(captured, _Response(_Message(content="hi"), "stop"))
+        asyncio.run(provider.decide(agent, messages=[{"role": "user", "content": "q"}], tool_messages=[]))
+
+        offered = {t["function"]["name"] for t in captured["tools"]}
+        self.assertEqual(offered, {"lookup_invoice", "route"})
+        # nested Chat-Completions shape (not the flat Response.tools shape)
+        inv = next(t for t in captured["tools"] if t["function"]["name"] == "lookup_invoice")
+        self.assertEqual(inv["type"], "function")
+        self.assertIn("parameters", inv["function"])
+        # route tool enum is THIS agent's own routes
+        route = next(t for t in captured["tools"] if t["function"]["name"] == ROUTE_TOOL_NAME)
+        self.assertEqual(route["function"]["parameters"]["properties"]["agent"]["enum"], ["human"])
+        # active agent's system prompt is prepended
+        self.assertEqual(captured["messages"][0], {"role": "system", "content": "You handle billing."})
+
+    def test_no_route_tool_when_agent_has_no_routes(self):
+        agent = Agent("billing", tools=[lookup_invoice])
+        captured: dict = {}
+        provider = _live(captured, _Response(_Message(content="hi"), "stop"))
+        asyncio.run(provider.decide(agent, messages=[], tool_messages=[]))
+        offered = {t["function"]["name"] for t in captured["tools"]}
+        self.assertEqual(offered, {"lookup_invoice"})
+
+    def test_tool_call_response_maps_to_calls(self):
+        agent = Agent("billing", tools=[lookup_invoice])
+        resp = _Response(
+            _Message(tool_calls=[_ToolCall("lookup_invoice", '{"invoice_id": "INV-9"}')]),
+            "tool_calls",
+        )
+        d = asyncio.run(_live({}, resp).decide(agent, messages=[], tool_messages=[]))
+        self.assertIsNone(d.final)
+        self.assertEqual(d.calls[0].name, "lookup_invoice")
+        self.assertEqual(json.loads(d.calls[0].arguments), {"invoice_id": "INV-9"})
+
+    def test_text_response_maps_to_final(self):
+        agent = Agent("billing", tools=[lookup_invoice])
+        resp = _Response(_Message(content="All done.", reasoning_content="because"), "stop")
+        d = asyncio.run(_live({}, resp).decide(agent, messages=[], tool_messages=[]))
+        self.assertEqual(d.final, "All done.")
+        self.assertEqual(d.reasoning, "because")
+
+    def test_acompletion_exception_degrades_to_final(self):
+        agent = Agent("billing", tools=[lookup_invoice])
+        d = asyncio.run(_live({}, raises=RuntimeError("boom")).decide(agent, messages=[], tool_messages=[]))
+        self.assertIsNotNone(d.final)
+        self.assertIn("boom", d.final)
+        self.assertFalse(d.calls)
