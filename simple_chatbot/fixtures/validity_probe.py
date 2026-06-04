@@ -1,6 +1,6 @@
 # simple_chatbot/fixtures/validity_probe.py
 """A single-agent scenario that fires each deterministic validity knob:
-unknown tool (→1), malformed args (→2), required-arg violation (→2)."""
+unknown tool (→1), malformed args (→2), required-arg violation (→2), type mismatch (→3)."""
 
 from simple_chatbot.scenario import (
     Agent,
@@ -25,6 +25,12 @@ def get_order(order_id: str) -> dict:
     return {"order_id": order_id, "status": "pending"}
 
 
+@tool
+def set_credit_limit(limit: int) -> dict:
+    """Set a customer's credit limit."""
+    return {"limit": limit}
+
+
 scenario = Scenario(
     id="validity-probe",
     description="Fires unknown-tool, malformed-args, and required-violation knobs.",
@@ -33,11 +39,12 @@ scenario = Scenario(
         Agent(
             "prober",
             system_prompt="A probe agent that deliberately misuses tools.",
-            tools=[lookup_invoice, get_order],
+            tools=[lookup_invoice, get_order, set_credit_limit],
             script=[
                 UnknownToolCall("ghost_tool"),
                 MalformedCall(lookup_invoice),
                 Call(get_order),  # omits required order_id → required violation
+                Call(set_credit_limit, {"limit": "a lot"}, type_mismatch=True),  # string ≠ int
                 Final("Probe complete."),
             ],
         ),

@@ -52,6 +52,10 @@ class ValidityProbeFixtureTests(unittest.TestCase):
         # a required-violation call with empty args present
         self.assertIn("{}", args_by_name.values())
 
+        # type-mismatch knob: schema wants int, author supplies a string
+        self.assertIn("set_credit_limit", args_by_name)
+        self.assertEqual(json.loads(args_by_name["set_credit_limit"]), {"limit": "a lot"})
+
 
 class ParallelFixtureTests(unittest.TestCase):
     def _run(self):
