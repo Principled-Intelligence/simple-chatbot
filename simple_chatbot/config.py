@@ -52,6 +52,13 @@ class SimpleChatbotConfig(BaseModel):
     # fallback (unknown/absent model uses the RAG agent path, as before).
     default_fixture: str | None = None
 
+    # Misbehavior injection (evil RAG agent). rate=None disables it (default,
+    # production/good agent). rate>0 with modes enables the evil twin. modes must
+    # be a subset of simple_chatbot.misbehavior.KNOWN_MODES.
+    misbehavior_rate: float | None = None
+    misbehavior_modes: list[str] = []
+    misbehavior_seed: int = 0
+
     # Sampling parameters forwarded to litellm — all default None (use model defaults).
     temperature: float | None = None
     top_p: float | None = None
@@ -71,6 +78,18 @@ class SimpleChatbotConfig(BaseModel):
             raise ValueError("chunk_overlap must be greater than or equal to 0.")
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("chunk_overlap must be smaller than chunk_size.")
+
+        if self.misbehavior_rate is not None:
+            if not 0.0 <= self.misbehavior_rate <= 1.0:
+                raise ValueError("misbehavior_rate must be in [0.0, 1.0].")
+            from simple_chatbot.misbehavior import KNOWN_MODES
+
+            unknown = set(self.misbehavior_modes) - KNOWN_MODES
+            if unknown:
+                raise ValueError(
+                    f"unknown misbehavior_modes: {sorted(unknown)}; "
+                    f"known: {sorted(KNOWN_MODES)}"
+                )
 
         if not self.guard.enabled:
             return self
