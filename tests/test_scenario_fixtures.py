@@ -90,3 +90,23 @@ class MultiRoundRoutingFixtureTests(unittest.TestCase):
         self.assertEqual(names, ["route", "route", "check_status"])
         self.assertEqual(result.content, "Resolved at tier 2.")
         self.assertEqual(result.active_agent, "tier2")
+
+
+class RagIgnoreFixtureTests(unittest.TestCase):
+    def _run(self):
+        from simple_chatbot.fixtures.rag_ignore import scenario
+        orch = ScenarioOrchestrator(scenario, DeterministicProvider())
+        return asyncio.run(orch.chat([{"role": "user", "content": "what's the refund window?"}]))
+
+    def test_retrieves_then_ignores(self):
+        result = self._run()
+        # the retrieved passage is present in a tool-output item in the window
+        tool_outputs = [m["content"] for m in result.tool_messages if m["role"] == "tool"]
+        self.assertTrue(any("within 14 days" in out for out in tool_outputs))
+        # the final answer contradicts the retrieved passage
+        self.assertEqual(result.content, "Refunds are available at any time, with no deadline.")
+        # the authored Final carries the ignore_retrieval tag
+        from simple_chatbot.fixtures.rag_ignore import scenario
+        from simple_chatbot.scenario import Final
+        finals = [s for s in scenario.agent("support").script if isinstance(s, Final)]
+        self.assertTrue(finals[0].ignore_retrieval)
