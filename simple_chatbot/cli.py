@@ -79,6 +79,26 @@ def serve(
             "falls back to SIMPLE_CHATBOT_SCENARIO_MODE."
         ),
     ),
+    misbehavior_rate: Optional[float] = typer.Option(
+        None,
+        help=(
+            "Enable the EVIL RAG agent: probability (0.0–1.0) of injecting a "
+            "misbehavior at each pipeline site. Unset disables it (production/good "
+            "agent); falls back to SIMPLE_CHATBOT_MISBEHAVIOR_RATE."
+        ),
+    ),
+    misbehavior_modes: Optional[str] = typer.Option(
+        None,
+        help=(
+            "Comma-separated misbehavior modes: poison_retrieval, drop_retrieval, "
+            "ignore_retrieval, redundant_search, malformed_search, unknown_tool, "
+            "wrong_value. Falls back to SIMPLE_CHATBOT_MISBEHAVIOR_MODES."
+        ),
+    ),
+    misbehavior_seed: int = typer.Option(
+        0,
+        help="Seed for reproducible misbehavior decisions; falls back to SIMPLE_CHATBOT_MISBEHAVIOR_SEED.",
+    ),
     max_tool_rounds: int = typer.Option(5, help="Max agentic loop iterations per request"),
     system_prompt: Optional[str] = typer.Option(
         None,
@@ -156,6 +176,18 @@ def serve(
     api_key_effective = api_key or os.environ.get("SIMPLE_CHATBOT_API_KEY")
     default_fixture_effective = default_fixture or os.environ.get("SIMPLE_CHATBOT_DEFAULT_FIXTURE")
     scenario_mode_effective = scenario_mode or os.environ.get("SIMPLE_CHATBOT_SCENARIO_MODE")
+    misbehavior_rate_raw = misbehavior_rate
+    if misbehavior_rate_raw is None:
+        env_rate = os.environ.get("SIMPLE_CHATBOT_MISBEHAVIOR_RATE")
+        misbehavior_rate_raw = float(env_rate) if env_rate else None
+    misbehavior_modes_raw = misbehavior_modes or os.environ.get("SIMPLE_CHATBOT_MISBEHAVIOR_MODES")
+    misbehavior_modes_list = (
+        [m.strip() for m in misbehavior_modes_raw.split(",") if m.strip()]
+        if misbehavior_modes_raw
+        else []
+    )
+    env_seed = os.environ.get("SIMPLE_CHATBOT_MISBEHAVIOR_SEED")
+    misbehavior_seed_effective = misbehavior_seed if misbehavior_seed else (int(env_seed) if env_seed else 0)
     guard_api_key_effective = _resolve_guard_api_key(guard_api_key, guard_api_url)
     guard_cfg = GuardConfig(
         enabled=enable_guard,
@@ -184,6 +216,9 @@ def serve(
         api_key=api_key_effective,
         default_fixture=default_fixture_effective,
         scenario_mode=scenario_mode_effective,
+        misbehavior_rate=misbehavior_rate_raw,
+        misbehavior_modes=misbehavior_modes_list,
+        misbehavior_seed=misbehavior_seed_effective,
         max_tool_rounds=max_tool_rounds,
         system_prompt=_load_text_or_file(system_prompt),
         conversation_log_dir=conversation_log_dir,
