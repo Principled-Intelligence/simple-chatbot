@@ -11,6 +11,7 @@ from simple_chatbot.config import GuardConfig, SimpleChatbotConfig
 from simple_chatbot.indexer import Indexer
 from simple_chatbot.loader import load_documents
 from simple_chatbot.server import app, init
+from simple_chatbot.service_description import print_service_description, resolve_active
 
 cli = typer.Typer(name="simple-chatbot", add_completion=False)
 
@@ -260,6 +261,10 @@ def serve(
         indexer.index(docs, force=reindex)
 
         init(config, indexer)
+
+    aisd_label, aisd_text = resolve_active(config)
+    logger.bind(aisd=aisd_label).info("Printing AI service description for the active chatbot")
+    print_service_description(aisd_label, aisd_text)
 
     logger.bind(host=host, port=port).info("Starting HTTP server")
     uvicorn.run(app, host=host, port=port, log_level="warning")

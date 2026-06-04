@@ -125,5 +125,44 @@ class RealFileResolutionTests(unittest.TestCase):
         self.assertEqual(good_text, evil_text)
 
 
+import os
+from unittest.mock import patch
+
+from typer.testing import CliRunner
+
+from simple_chatbot.cli import cli
+
+
+class CliStartupPrintTests(unittest.TestCase):
+    def test_serve_prints_live_rag_aisd_at_startup(self):
+        runner = CliRunner()
+        with TemporaryDirectory() as tmp:
+            env = {**os.environ, "SIMPLE_CHATBOT_SCRIPTED_LLM": "1"}
+            # Patch uvicorn.run so serve returns instead of blocking on the server.
+            with patch("simple_chatbot.cli.uvicorn.run", return_value=None):
+                result = runner.invoke(
+                    cli,
+                    ["serve", "--docs-dir", str(Path(tmp) / "docs")],
+                    env=env,
+                )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("AI SERVICE DESCRIPTION — live-rag", result.output)
+        self.assertIn("search_documents", result.output)
+
+    def test_serve_prints_fixture_aisd_when_default_fixture_set(self):
+        runner = CliRunner()
+        with TemporaryDirectory() as tmp:
+            env = {**os.environ, "SIMPLE_CHATBOT_SCRIPTED_LLM": "1"}
+            with patch("simple_chatbot.cli.uvicorn.run", return_value=None):
+                result = runner.invoke(
+                    cli,
+                    ["serve", "--docs-dir", str(Path(tmp) / "docs"), "--default-fixture", "cs-routing"],
+                    env=env,
+                )
+        self.assertEqual(result.exit_code, 0, result.output)
+        self.assertIn("AI SERVICE DESCRIPTION — cs-routing", result.output)
+        self.assertIn("issue_refund", result.output)
+
+
 if __name__ == "__main__":
     unittest.main()
