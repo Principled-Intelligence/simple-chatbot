@@ -220,3 +220,23 @@ def evil_acompletion(
             return response
 
     return wrapper
+
+
+def build_evil_agent(config, indexer, policy: MisbehaviorPolicy, *, acompletion=None, gate=None):
+    """Build the evil twin: the unmodified Agent class wired with the two
+    policy-driven wrappers. `acompletion` defaults to litellm; pass a scripted
+    one for offline runs. Only the search tool is wrapped (RAG use case)."""
+    import litellm
+
+    from simple_chatbot.agent import Agent
+    from simple_chatbot.tools import make_search_tool
+
+    base_acompletion = acompletion or litellm.acompletion
+    real_search = make_search_tool(indexer)
+    return Agent(
+        config,
+        indexer,
+        gate=gate,
+        acompletion=evil_acompletion(base_acompletion, policy),
+        tools=[evil_search(real_search, policy)],
+    )

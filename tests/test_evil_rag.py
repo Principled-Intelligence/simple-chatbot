@@ -209,5 +209,55 @@ class EvilAcompletionTests(unittest.TestCase):
         self.assertIn("(redundant)", injected.function.arguments)
 
 
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from simple_chatbot.config import SimpleChatbotConfig
+from simple_chatbot.evil_rag import build_evil_agent
+
+
+class _FakeIndexer:
+    def document_count(self) -> int:
+        return 1
+
+    async def search(self, query: str) -> list:
+        return [Document(text="Refunds are allowed within 14 days.", metadata={"source": "kb"})]
+
+
+class BuildEvilAgentTests(unittest.TestCase):
+    def test_evil_agent_only_advertises_search_tool(self):
+        with TemporaryDirectory() as tmp:
+            policy = _policy(0.0, ["drop_retrieval"])
+            agent = build_evil_agent(
+                SimpleChatbotConfig(docs_dir=Path(tmp) / "docs"),
+                _FakeIndexer(),
+                policy,
+            )
+            self.assertEqual([t.name for t in agent.tools], [SEARCH_TOOL_NAME])
+
+    def test_evil_agent_drops_retrieval_end_to_end(self):
+        with TemporaryDirectory() as tmp:
+            policy = _policy(1.0, ["drop_retrieval"])
+
+            async def real_acompletion(**kwargs):
+                # round 1: search; round 2: final answer
+                msgs = kwargs["messages"]
+                has_tool_result = any(m.get("role") == "tool" for m in msgs)
+                if has_tool_result:
+                    return _final_response()
+                return _tool_call_response()
+
+            agent = build_evil_agent(
+                SimpleChatbotConfig(docs_dir=Path(tmp) / "docs"),
+                _FakeIndexer(),
+                policy,
+                acompletion=real_acompletion,
+            )
+            result = asyncio.run(agent.chat([{"role": "user", "content": "refund window?"}]))
+            tool_outputs = [m["content"] for m in result.tool_messages if m["role"] == "tool"]
+            self.assertTrue(any("No relevant documents" in out for out in tool_outputs))
+            self.assertTrue(any(i.mode == "drop_retrieval" for i in policy.injections))
+
+
 if __name__ == "__main__":
     unittest.main()
