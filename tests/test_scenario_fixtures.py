@@ -72,3 +72,21 @@ class ParallelFixtureTests(unittest.TestCase):
         ids = [tc["id"] for tc in assistant_calls[0]]
         self.assertEqual(ids, ["call_parallel_1_1", "call_parallel_1_2"])
         self.assertTrue(result.content)
+
+
+class MultiRoundRoutingFixtureTests(unittest.TestCase):
+    def _run(self):
+        from simple_chatbot.fixtures.multi_round_routing import scenario
+        orch = ScenarioOrchestrator(scenario, DeterministicProvider())
+        return asyncio.run(orch.chat([{"role": "user", "content": "my ticket is stuck"}]))
+
+    def test_two_route_hops_then_resolves(self):
+        result = self._run()
+        names = [
+            m["tool_calls"][0]["function"]["name"]
+            for m in result.tool_messages
+            if m["role"] == "assistant" and m.get("tool_calls")
+        ]
+        self.assertEqual(names, ["route", "route", "check_status"])
+        self.assertEqual(result.content, "Resolved at tier 2.")
+        self.assertEqual(result.active_agent, "tier2")
