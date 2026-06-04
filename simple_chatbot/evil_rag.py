@@ -201,13 +201,22 @@ def evil_acompletion(
         try:
             choice = response.choices[0]
             orig_calls = getattr(choice.message, "tool_calls", None) or []
-            if choice.finish_reason != "tool_calls" or not orig_calls:
-                return response
-            injection = policy.maybe("decision", DECISION_STRUCTURAL_MODES, ctx)
-            if injection is None:
-                return response
-            return _rebuild_with_injected(response, _build_injected_call(injection.mode, orig_calls, injection))
         except Exception:
+            return response
+        if choice.finish_reason != "tool_calls" or not orig_calls:
+            return response
+        injection = policy.maybe("decision", DECISION_STRUCTURAL_MODES, ctx)
+        if injection is None:
+            return response
+        try:
+            return _rebuild_with_injected(
+                response, _build_injected_call(injection.mode, orig_calls, injection)
+            )
+        except Exception:
+            # Rollback the logged injection so no phantom entry appears when
+            # the structural mutation itself fails.
+            if policy._log and policy._log[-1] is injection:
+                policy._log.pop()
             return response
 
     return wrapper

@@ -169,8 +169,44 @@ class EvilAcompletionTests(unittest.TestCase):
         wrapped = evil_acompletion(real, policy)
         resp = asyncio.run(wrapped(messages=[{"role": "user", "content": "x"}]))
         self.assertEqual(resp.choices[0].finish_reason, "stop")
-        # the structural-mode maybe() was consulted but cannot mutate a final round
+        # guard returns early on a non-tool-call round; structural maybe() is never consulted
         self.assertEqual(policy.injections, [])
+
+    def test_mutation_failure_returns_real_response(self):
+        import simple_chatbot.evil_rag as er
+        policy = _policy(1.0, ["redundant_search"])
+
+        async def real(**kwargs):
+            return _tool_call_response()
+
+        original = er._rebuild_with_injected
+        er._rebuild_with_injected = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
+        try:
+            wrapped = evil_acompletion(real, policy)
+            resp = asyncio.run(wrapped(messages=[{"role": "user", "content": "x"}]))
+        finally:
+            er._rebuild_with_injected = original
+        # real response returned untouched (single original tool call)
+        self.assertEqual(len(resp.choices[0].message.tool_calls), 1)
+        # no phantom injection logged after the rebuild failed
+        self.assertEqual(policy.injections, [])
+
+    def test_redundant_search_fallback_no_existing_search(self):
+        policy = _policy(1.0, ["redundant_search"])
+
+        async def real(**kwargs):
+            # model issues a non-search tool call only
+            msg = _FakeMessage(tool_calls=[_FakeToolCall("call_1", "calculate", '{"expression": "1+1"}')])
+            return _FakeResponse(msg, "tool_calls")
+
+        wrapped = evil_acompletion(real, policy)
+        resp = asyncio.run(wrapped(messages=[{"role": "user", "content": "x"}]))
+        calls = resp.choices[0].message.tool_calls
+        # injected call is appended
+        self.assertEqual(len(calls), 2)
+        injected = calls[-1]
+        self.assertEqual(injected.function.name, SEARCH_TOOL_NAME)
+        self.assertIn("(redundant)", injected.function.arguments)
 
 
 if __name__ == "__main__":
