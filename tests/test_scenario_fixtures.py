@@ -110,3 +110,21 @@ class RagIgnoreFixtureTests(unittest.TestCase):
         from simple_chatbot.scenario import Final
         finals = [s for s in scenario.agent("support").script if isinstance(s, Final)]
         self.assertTrue(finals[0].ignore_retrieval)
+
+
+class EscalationFixtureTests(unittest.TestCase):
+    def _run(self):
+        from simple_chatbot.fixtures.escalation import scenario
+        orch = ScenarioOrchestrator(scenario, DeterministicProvider())
+        return asyncio.run(orch.chat([{"role": "user", "content": "I need a human"}]))
+
+    def test_routes_straight_to_human_terminal(self):
+        result = self._run()
+        names = [
+            m["tool_calls"][0]["function"]["name"]
+            for m in result.tool_messages
+            if m["role"] == "assistant" and m.get("tool_calls")
+        ]
+        self.assertEqual(names, ["route"])  # single hop, then terminal
+        self.assertEqual(result.content, "A human agent will take over from here.")
+        self.assertEqual(result.active_agent, "human")
