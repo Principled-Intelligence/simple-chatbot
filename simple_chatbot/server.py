@@ -106,6 +106,11 @@ def init(
     _conversation_logger = ConversationLogger(config.conversation_log_dir)
     _response_store = ResponseStore()
     _scenario_registry = load_fixtures()
+    if config.default_fixture and config.default_fixture not in _scenario_registry:
+        raise ValueError(
+            f"default_fixture {config.default_fixture!r} is not a known fixture; "
+            f"available: {sorted(_scenario_registry)}"
+        )
     logger.bind(
         model=config.chat_model,
         top_k=config.top_k,
@@ -320,9 +325,17 @@ async def responses_create(request: Request, body: ResponsesRequest):
 
         start = time.perf_counter()
         registry = _scenario_registry or {}
-        scenario = registry.get(body.model)
+        config = _require_config()
+        # Resolve which fixture (if any) handles this turn. An explicitly named
+        # fixture always wins; otherwise fall back to the server's default
+        # fixture so a client that can't set the model still gets one.
+        effective_model = body.model
+        scenario = registry.get(effective_model)
+        if scenario is None and config.default_fixture:
+            scenario = registry.get(config.default_fixture)
+            if scenario is not None:
+                effective_model = config.default_fixture
         if scenario is not None:
-            config = _require_config()
             resolved_mode = config.scenario_mode or scenario.mode
             if resolved_mode == "live":
                 provider = LiveProvider(
@@ -340,7 +353,7 @@ async def responses_create(request: Request, body: ResponsesRequest):
             # carrying an agent across scenarios.
             start_agent = (
                 prior_entry.get("active_agent")
-                if prior_entry and prior_entry.get("model") == body.model
+                if prior_entry and prior_entry.get("model") == effective_model
                 else None
             )
             result = await orchestrator.chat(messages, start_agent=start_agent)
@@ -376,7 +389,7 @@ async def responses_create(request: Request, body: ResponsesRequest):
                 "session_messages": list(result.final_messages),
                 "response_json": payload,
                 "conversation_id": conversation_id,
-                "model": body.model,
+                "model": effective_model,
                 "active_agent": result.active_agent,
             },
         )

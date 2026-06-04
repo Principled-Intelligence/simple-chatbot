@@ -47,6 +47,11 @@ class SimpleChatbotConfig(BaseModel):
     # None = honor each scenario's per-scenario default.
     scenario_mode: Literal["deterministic", "live"] | None = None
 
+    # Scenario engine: fixture id to run when a /v1/responses request does not
+    # name a known fixture (e.g. a client that can't set the model). None = no
+    # fallback (unknown/absent model uses the RAG agent path, as before).
+    default_fixture: str | None = None
+
     # Sampling parameters forwarded to litellm — all default None (use model defaults).
     temperature: float | None = None
     top_p: float | None = None
