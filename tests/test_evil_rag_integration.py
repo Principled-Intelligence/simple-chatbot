@@ -138,7 +138,6 @@ class EvilServerWiringTests(unittest.TestCase):
 
     def test_init_enables_evil_agent_and_endpoint_surfaces_labels(self):
         from simple_chatbot.config import SimpleChatbotConfig
-        from simple_chatbot.scenario_registry import load_fixtures
 
         cfg = SimpleChatbotConfig(
             docs_dir=Path(self.tmp.name) / "docs",

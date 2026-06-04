@@ -1,6 +1,7 @@
 import hmac
 import time
 import uuid
+from dataclasses import asdict
 from typing import Any, Awaitable, Callable
 
 from fastapi import FastAPI, HTTPException, Request
@@ -353,6 +354,7 @@ async def responses_create(request: Request, body: ResponsesRequest):
             scenario = registry.get(config.default_fixture)
             if scenario is not None:
                 effective_model = config.default_fixture
+        new_injections: list = []
         if scenario is not None:
             resolved_mode = config.scenario_mode or scenario.mode
             if resolved_mode == "live":
@@ -376,6 +378,10 @@ async def responses_create(request: Request, body: ResponsesRequest):
             )
             result = await orchestrator.chat(messages, start_agent=start_agent)
         else:
+            # NOTE: the policy log is shared across requests and this slice is
+            # not request-isolated; under concurrent requests a response may
+            # include another request's injections. Acceptable for the
+            # test-harness/evil-agent use case only.
             before = len(_misbehavior_policy.injections) if _misbehavior_policy else 0
             result = await _require_agent().chat(messages)
             new_injections = (
@@ -391,8 +397,6 @@ async def responses_create(request: Request, body: ResponsesRequest):
         )
 
         if scenario is None and new_injections:
-            from dataclasses import asdict
-
             payload["misbehavior_injections"] = [asdict(i) for i in new_injections]
 
         logger.bind(
