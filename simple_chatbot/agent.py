@@ -60,6 +60,29 @@ def _sanitize_assistant_dump(dump: dict) -> dict:
     return sanitized
 
 
+def sampling_kwargs(config: SimpleChatbotConfig) -> dict:
+    """Return only the sampling params the user set explicitly (skip None).
+
+    Shared by the single-agent `Agent` and the scenario `LiveProvider` so both
+    forward identical wire kwargs to litellm.
+    """
+    # attr name on SimpleChatbotConfig  ->  key litellm/OpenAI expects on the wire
+    field_map = {
+        "temperature": "temperature",
+        "top_p": "top_p",
+        "gen_top_k": "top_k",
+        "min_p": "min_p",
+        "presence_penalty": "presence_penalty",
+        "frequency_penalty": "frequency_penalty",
+        "repetition_penalty": "repetition_penalty",
+    }
+    return {
+        wire: getattr(config, attr)
+        for attr, wire in field_map.items()
+        if getattr(config, attr) is not None
+    }
+
+
 @dataclass
 class ChatResult:
     content: str
@@ -96,21 +119,7 @@ class Agent:
 
     def _sampling_kwargs(self) -> dict:
         """Return only the sampling params the user set explicitly (skip None)."""
-        # attr name on SimpleChatbotConfig  ->  key litellm/OpenAI expects on the wire
-        field_map = {
-            "temperature": "temperature",
-            "top_p": "top_p",
-            "gen_top_k": "top_k",
-            "min_p": "min_p",
-            "presence_penalty": "presence_penalty",
-            "frequency_penalty": "frequency_penalty",
-            "repetition_penalty": "repetition_penalty",
-        }
-        return {
-            wire: getattr(self.config, attr)
-            for attr, wire in field_map.items()
-            if getattr(self.config, attr) is not None
-        }
+        return sampling_kwargs(self.config)
 
     async def chat(self, messages: list[dict]) -> ChatResult:
         logger.bind(
