@@ -68,5 +68,35 @@ class ResolverUnitTests(unittest.TestCase):
         self.assertIn("=" * 72, out)
 
 
+from simple_chatbot.scenario_registry import load_fixtures
+from simple_chatbot.service_description import LIVE_RAG_KEY
+
+
+class ContentCoverageTests(unittest.TestCase):
+    _REQUIRED_HEADERS = (
+        "## Service overview",
+        "## Surface & capabilities",
+        "## Out of scope",
+    )
+
+    def _aisd_text(self, key):
+        path = sd._AISD_DIR / f"{key}.md"
+        self.assertTrue(path.is_file(), f"missing AISD file: {path}")
+        return path.read_text(encoding="utf-8")
+
+    def test_every_fixture_has_an_aisd(self):
+        for fixture_id in load_fixtures():
+            text = self._aisd_text(fixture_id)
+            self.assertTrue(text.strip(), f"empty AISD for {fixture_id}")
+            for header in self._REQUIRED_HEADERS:
+                self.assertIn(header, text, f"{fixture_id} missing {header!r}")
+
+    def test_live_rag_has_an_aisd(self):
+        text = self._aisd_text(LIVE_RAG_KEY)
+        self.assertTrue(text.strip())
+        for header in self._REQUIRED_HEADERS:
+            self.assertIn(header, text)
+
+
 if __name__ == "__main__":
     unittest.main()
