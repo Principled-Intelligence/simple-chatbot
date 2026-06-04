@@ -3,6 +3,7 @@ import asyncio
 import json
 import unittest
 
+from simple_chatbot.scenario import Call
 from simple_chatbot.scenario_provider import DeterministicProvider
 from simple_chatbot.scenario_orchestrator import ScenarioOrchestrator
 
@@ -128,3 +129,25 @@ class EscalationFixtureTests(unittest.TestCase):
         self.assertEqual(names, ["route"])  # single hop, then terminal
         self.assertEqual(result.content, "A human agent will take over from here.")
         self.assertEqual(result.active_agent, "human")
+
+
+class RelevanceProbeFixtureTests(unittest.TestCase):
+    def _run(self):
+        from simple_chatbot.fixtures.relevance_probe import scenario
+        orch = ScenarioOrchestrator(scenario, DeterministicProvider())
+        return asyncio.run(orch.chat([{"role": "user", "content": "what's my balance?"}]))
+
+    def test_emits_irrelevant_wrong_value_and_redundant(self):
+        from simple_chatbot.fixtures.relevance_probe import scenario
+        result = self._run()
+        names = [
+            m["tool_calls"][0]["function"]["name"]
+            for m in result.tool_messages
+            if m["role"] == "assistant" and m.get("tool_calls")
+        ]
+        self.assertEqual(names, ["get_weather", "lookup_invoice", "lookup_invoice"])
+        # tags recorded on the authored script (in order)
+        call_steps = [s for s in scenario.agent("agent").script if isinstance(s, Call)]
+        self.assertTrue(call_steps[0].irrelevant)
+        self.assertTrue(call_steps[1].wrong_value)
+        self.assertTrue(call_steps[2].redundant)
