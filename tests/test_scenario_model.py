@@ -1,7 +1,7 @@
 # tests/test_scenario_model.py
 import unittest
 
-from simple_chatbot.scenario import Agent, Scenario, tool, ScenarioTool, Call, Route, Final, MalformedCall, UnknownToolCall
+from simple_chatbot.scenario import Agent, Scenario, tool, ScenarioTool, Call, Route, Final, MalformedCall, UnknownToolCall, Parallel
 
 
 class ToolDecoratorTests(unittest.TestCase):
@@ -133,3 +133,38 @@ class ScenarioModeTests(unittest.TestCase):
     def test_mode_accepts_live(self):
         s = Scenario(id="m", entry="a", agents=[Agent("a")], mode="live")
         self.assertEqual(s.mode, "live")
+
+
+class ParallelStepTests(unittest.TestCase):
+    def _tool(self):
+        @tool
+        def lookup(invoice_id: str) -> dict:
+            """Look up an invoice."""
+            return {"invoice_id": invoice_id}
+        return lookup
+
+    def test_parallel_holds_call_family_steps(self):
+        lookup = self._tool()
+        p = Parallel([Call(lookup, {"invoice_id": "INV-1"}), MalformedCall(lookup)])
+        self.assertEqual(len(p.steps), 2)
+
+    def test_valid_parallel_scenario_constructs(self):
+        lookup = self._tool()
+        s = Scenario(
+            id="ok",
+            entry="a",
+            agents=[Agent("a", tools=[lookup], script=[Parallel([Call(lookup, {"invoice_id": "INV-1"})])])],
+        )
+        self.assertEqual(s.entry, "a")
+
+    def test_parallel_rejects_route_inside(self):
+        with self.assertRaises(ValueError):
+            Scenario(id="bad", entry="a", agents=[Agent("a", script=[Parallel([Route("a")])])])
+
+    def test_parallel_rejects_final_inside(self):
+        with self.assertRaises(ValueError):
+            Scenario(id="bad", entry="a", agents=[Agent("a", script=[Parallel([Final("x")])])])
+
+    def test_parallel_rejects_nested_parallel(self):
+        with self.assertRaises(ValueError):
+            Scenario(id="bad", entry="a", agents=[Agent("a", script=[Parallel([Parallel([])])])])

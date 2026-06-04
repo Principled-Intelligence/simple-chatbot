@@ -103,7 +103,19 @@ class UnknownToolCall:
     args: dict = field(default_factory=dict)
 
 
-Step = Call | Route | Final | MalformedCall | UnknownToolCall
+@dataclass
+class Parallel:
+    """A fan-out round: emit several tool calls in ONE assistant message.
+
+    May contain only call-family steps (`Call`, `MalformedCall`,
+    `UnknownToolCall`) — never `Route`, `Final`, or a nested `Parallel`
+    (a fan-out batch cannot hand off, finish, or nest). Enforced in
+    `Scenario.validate()`."""
+
+    steps: list[Call | MalformedCall | UnknownToolCall] = field(default_factory=list)
+
+
+Step = Call | Route | Final | MalformedCall | UnknownToolCall | Parallel
 
 
 @dataclass
@@ -160,3 +172,13 @@ class Scenario:
                     raise ValueError(
                         f"agent {a.name!r} routes to unknown agent {target!r}"
                     )
+        for a in self.agents:
+            for step in a.script:
+                if isinstance(step, Parallel):
+                    for inner in step.steps:
+                        if not isinstance(inner, (Call, MalformedCall, UnknownToolCall)):
+                            raise ValueError(
+                                f"Parallel step in agent {a.name!r} may contain only "
+                                f"Call/MalformedCall/UnknownToolCall, got "
+                                f"{type(inner).__name__}"
+                            )
