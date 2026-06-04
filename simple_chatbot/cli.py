@@ -70,6 +70,15 @@ def serve(
             "SIMPLE_CHATBOT_DEFAULT_FIXTURE. An explicitly named fixture still wins."
         ),
     ),
+    scenario_mode: Optional[str] = typer.Option(
+        None,
+        help=(
+            "Server-level override for how fixtures run: 'deterministic' (replay "
+            "the authored script) or 'live' (model-driven via the configured chat "
+            "model, ignoring the script). Unset honors each fixture's own mode; "
+            "falls back to SIMPLE_CHATBOT_SCENARIO_MODE."
+        ),
+    ),
     max_tool_rounds: int = typer.Option(5, help="Max agentic loop iterations per request"),
     system_prompt: Optional[str] = typer.Option(
         None,
@@ -146,6 +155,7 @@ def serve(
 
     api_key_effective = api_key or os.environ.get("SIMPLE_CHATBOT_API_KEY")
     default_fixture_effective = default_fixture or os.environ.get("SIMPLE_CHATBOT_DEFAULT_FIXTURE")
+    scenario_mode_effective = scenario_mode or os.environ.get("SIMPLE_CHATBOT_SCENARIO_MODE")
     guard_api_key_effective = _resolve_guard_api_key(guard_api_key, guard_api_url)
     guard_cfg = GuardConfig(
         enabled=enable_guard,
@@ -173,6 +183,7 @@ def serve(
         port=port,
         api_key=api_key_effective,
         default_fixture=default_fixture_effective,
+        scenario_mode=scenario_mode_effective,
         max_tool_rounds=max_tool_rounds,
         system_prompt=_load_text_or_file(system_prompt),
         conversation_log_dir=conversation_log_dir,
