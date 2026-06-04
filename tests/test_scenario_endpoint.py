@@ -29,6 +29,7 @@ class ScenarioEndpointTests(unittest.TestCase):
         self.old = (
             server._config, server._agent, server._conversation_logger,
             getattr(server, "_response_store", None), getattr(server, "_scenario_registry", None),
+            getattr(server, "_acompletion", None),
         )
         self.addCleanup(self._restore)
 
@@ -45,7 +46,8 @@ class ScenarioEndpointTests(unittest.TestCase):
 
     def _restore(self):
         (server._config, server._agent, server._conversation_logger,
-         server._response_store, server._scenario_registry) = self.old
+         server._response_store, server._scenario_registry,
+         server._acompletion) = self.old
 
     def test_known_model_runs_scenario(self):
         resp = self.client.post("/v1/responses", json={"model": "cs-routing", "input": "refund"})
@@ -94,3 +96,65 @@ class ScenarioTraceShapeTests(ScenarioEndpointTests):
         call_names = {it["name"] for it in body["output"] if it["type"] == "function_call"}
         # every emitted call resolves to a catalog entry by name (validity precondition)
         self.assertTrue(call_names.issubset(catalog_names))
+
+
+# These fakes mirror litellm's response object shape for the live path.
+class _LiveFunction:
+    def __init__(self, name, arguments):
+        self.name = name
+        self.arguments = arguments
+
+
+class _LiveToolCall:
+    def __init__(self, name, arguments):
+        self.function = _LiveFunction(name, arguments)
+
+
+class _LiveMessage:
+    def __init__(self, content="", tool_calls=None):
+        self.content = content
+        self.tool_calls = tool_calls or []
+
+
+class _LiveChoice:
+    def __init__(self, message, finish_reason):
+        self.message = message
+        self.finish_reason = finish_reason
+
+
+class _LiveResponse:
+    def __init__(self, message, finish_reason):
+        self.choices = [_LiveChoice(message, finish_reason)]
+        self.usage = None
+
+
+class ScenarioModeAndResumeTests(ScenarioEndpointTests):
+    def test_deterministic_resume_stays_in_routed_agent(self):
+        # turn 1: dispatcher routes to billing, billing answers
+        r1 = self.client.post("/v1/responses", json={"model": "cs-routing", "input": "refund"})
+        self.assertEqual(r1.status_code, 200, r1.text)
+        rid = r1.json()["id"]
+        # turn 2: chained — must resume in billing (no route call), per the requirement
+        r2 = self.client.post(
+            "/v1/responses",
+            json={"model": "cs-routing", "input": "and the receipt?", "previous_response_id": rid},
+        )
+        self.assertEqual(r2.status_code, 200, r2.text)
+        call_names = [it["name"] for it in r2.json()["output"] if it["type"] == "function_call"]
+        self.assertNotIn("route", call_names)
+        self.assertEqual(call_names[0], "lookup_invoice")
+
+    def test_server_mode_override_selects_live_provider(self):
+        # force the whole server live; inject a fake acompletion that finalizes immediately
+        server._config.scenario_mode = "live"
+
+        async def fake_acompletion(**kwargs):
+            return _LiveResponse(_LiveMessage(content="live answer"), "stop")
+
+        server._acompletion = fake_acompletion
+        resp = self.client.post("/v1/responses", json={"model": "cs-routing", "input": "refund"})
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["output"][-1]["content"][0]["text"], "live answer")
+        # catalog still published in live mode
+        self.assertIn("route", {t["name"] for t in body["tools"]})

@@ -7,7 +7,9 @@ from fastapi import FastAPI, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel
 
-from simple_chatbot.agent import Agent
+import litellm
+
+from simple_chatbot.agent import Agent, sampling_kwargs
 from simple_chatbot.config import SimpleChatbotConfig
 from simple_chatbot.conversation_logger import ConversationLogger, derive_conversation_id
 from simple_chatbot.guard import ScopeGuardGate
@@ -19,7 +21,7 @@ from simple_chatbot.responses import (
     normalize_input,
 )
 from simple_chatbot.scenario_orchestrator import ScenarioOrchestrator
-from simple_chatbot.scenario_provider import DeterministicProvider
+from simple_chatbot.scenario_provider import DeterministicProvider, LiveProvider
 from simple_chatbot.scenario_registry import load_fixtures
 from simple_chatbot.scripted_indexer import ScriptedIndexer
 from simple_chatbot.tools import ToolDef
@@ -31,6 +33,7 @@ _agent: Agent | None = None
 _conversation_logger: ConversationLogger | None = None
 _response_store: ResponseStore | None = None
 _scenario_registry: dict | None = None
+_acompletion: Callable[..., Awaitable[Any]] | None = None
 
 
 def _require_config() -> SimpleChatbotConfig:
@@ -86,8 +89,9 @@ def init(
     acompletion: Callable[..., Awaitable[Any]] | None = None,
     tools: list[ToolDef] | None = None,
 ) -> None:
-    global _config, _agent, _conversation_logger, _response_store, _scenario_registry
+    global _config, _agent, _conversation_logger, _response_store, _scenario_registry, _acompletion
     _config = config
+    _acompletion = acompletion
     gate: ScopeGuardGate | None = None
     if config.guard.enabled:
         gate = ScopeGuardGate(config.guard, config.system_prompt)
@@ -318,8 +322,28 @@ async def responses_create(request: Request, body: ResponsesRequest):
         registry = _scenario_registry or {}
         scenario = registry.get(body.model)
         if scenario is not None:
-            orchestrator = ScenarioOrchestrator(scenario, DeterministicProvider())
-            result = await orchestrator.chat(messages)
+            config = _require_config()
+            resolved_mode = config.scenario_mode or scenario.mode
+            if resolved_mode == "live":
+                provider = LiveProvider(
+                    acompletion=_acompletion or litellm.acompletion,
+                    model=config.chat_model,
+                    api_base=config.chat_api_base,
+                    sampling_kwargs=sampling_kwargs(config),
+                )
+            else:
+                provider = DeterministicProvider()
+            orchestrator = ScenarioOrchestrator(scenario, provider)
+            # Only resume the in-charge agent when the prior turn ran the SAME
+            # scenario (selected by body.model). The orchestrator falls back to
+            # the entry agent on an unknown name, so this is purely to avoid
+            # carrying an agent across scenarios.
+            start_agent = (
+                prior_entry.get("active_agent")
+                if prior_entry and prior_entry.get("model") == body.model
+                else None
+            )
+            result = await orchestrator.chat(messages, start_agent=start_agent)
         else:
             result = await _require_agent().chat(messages)
         elapsed_ms = (time.perf_counter() - start) * 1000
@@ -352,6 +376,8 @@ async def responses_create(request: Request, body: ResponsesRequest):
                 "session_messages": list(result.final_messages),
                 "response_json": payload,
                 "conversation_id": conversation_id,
+                "model": body.model,
+                "active_agent": result.active_agent,
             },
         )
 
