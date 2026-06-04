@@ -50,3 +50,25 @@ class ValidityProbeFixtureTests(unittest.TestCase):
         self.assertIn("{intentionally_malformed_json", args_by_name.values())
         # a required-violation call with empty args present
         self.assertIn("{}", args_by_name.values())
+
+
+class ParallelFixtureTests(unittest.TestCase):
+    def _run(self):
+        from simple_chatbot.fixtures.parallel import scenario
+        orch = ScenarioOrchestrator(scenario, DeterministicProvider())
+        return asyncio.run(orch.chat([{"role": "user", "content": "Lisbon this weekend?"}]))
+
+    def test_fans_out_two_calls_in_one_round(self):
+        result = self._run()
+        assistant_calls = [
+            m["tool_calls"] for m in result.tool_messages
+            if m["role"] == "assistant" and m.get("tool_calls")
+        ]
+        # exactly one assistant message carrying both calls (a single fan-out round)
+        self.assertEqual(len(assistant_calls), 1)
+        names = [tc["function"]["name"] for tc in assistant_calls[0]]
+        self.assertEqual(names, ["get_weather", "get_events"])
+        # deterministic per-call ids within the round
+        ids = [tc["id"] for tc in assistant_calls[0]]
+        self.assertEqual(ids, ["call_parallel_1_1", "call_parallel_1_2"])
+        self.assertTrue(result.content)
