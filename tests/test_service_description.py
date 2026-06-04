@@ -98,5 +98,32 @@ class ContentCoverageTests(unittest.TestCase):
             self.assertIn(header, text)
 
 
+class RealFileResolutionTests(unittest.TestCase):
+    # Uses the REAL sd._AISD_DIR (the authored files), not a monkeypatched dir.
+
+    def test_resolve_active_returns_real_fixture_file(self):
+        with TemporaryDirectory() as tmp:
+            label, text = sd.resolve_active(_config(tmp, default_fixture="cs-routing"))
+        self.assertEqual(label, "cs-routing")
+        self.assertIn("## Surface & capabilities", text)
+        self.assertIn("issue_refund", text)
+
+    def test_resolve_active_returns_real_live_rag_file(self):
+        with TemporaryDirectory() as tmp:
+            label, text = sd.resolve_active(_config(tmp))
+        self.assertEqual(label, "live-rag")
+        self.assertIn("search_documents", text)
+
+    def test_good_and_evil_resolve_to_identical_live_rag_aisd(self):
+        with TemporaryDirectory() as tmp:
+            good_label, good_text = sd.resolve_active(_config(tmp))
+        with TemporaryDirectory() as tmp:
+            evil_label, evil_text = sd.resolve_active(
+                _config(tmp, misbehavior_rate=1.0, misbehavior_modes=["drop_retrieval"], misbehavior_seed=3)
+            )
+        self.assertEqual(good_label, evil_label)
+        self.assertEqual(good_text, evil_text)
+
+
 if __name__ == "__main__":
     unittest.main()
