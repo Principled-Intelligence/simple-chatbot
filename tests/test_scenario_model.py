@@ -123,3 +123,13 @@ class ScenarioModelTests(unittest.TestCase):
     def test_validate_rejects_duplicate_agent_names(self):
         with self.assertRaises(ValueError):
             Scenario(id="x", entry="a", agents=[Agent("a"), Agent("a")])
+
+
+class ScenarioModeTests(unittest.TestCase):
+    def test_mode_defaults_to_deterministic(self):
+        s = Scenario(id="m", entry="a", agents=[Agent("a")])
+        self.assertEqual(s.mode, "deterministic")
+
+    def test_mode_accepts_live(self):
+        s = Scenario(id="m", entry="a", agents=[Agent("a")], mode="live")
+        self.assertEqual(s.mode, "live")

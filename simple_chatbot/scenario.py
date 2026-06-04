@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import inspect
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Literal
 
 from pydantic import create_model
 
@@ -123,6 +123,7 @@ class Scenario:
     entry: str
     agents: list[Agent]
     description: str = ""
+    mode: Literal["deterministic", "live"] = "deterministic"
 
     def __post_init__(self) -> None:
         self.validate()
