@@ -168,3 +168,24 @@ class ParallelStepTests(unittest.TestCase):
     def test_parallel_rejects_nested_parallel(self):
         with self.assertRaises(ValueError):
             Scenario(id="bad", entry="a", agents=[Agent("a", script=[Parallel([Parallel([])])])])
+
+
+class CallTagTests(unittest.TestCase):
+    def _tool(self):
+        @tool
+        def t(x: str) -> dict:
+            """t."""
+            return {"x": x}
+        return t
+
+    def test_tags_default_false(self):
+        c = Call(self._tool(), {"x": "1"})
+        self.assertFalse(c.redundant)
+        self.assertFalse(c.wrong_value)
+        self.assertFalse(c.type_mismatch)
+
+    def test_tags_settable(self):
+        c = Call(self._tool(), {"x": "1"}, redundant=True, wrong_value=True, type_mismatch=True)
+        self.assertTrue(c.redundant)
+        self.assertTrue(c.wrong_value)
+        self.assertTrue(c.type_mismatch)

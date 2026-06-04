@@ -71,6 +71,9 @@ class Call:
     tool: ScenarioTool
     args: dict = field(default_factory=dict)
     irrelevant: bool = False  # tag for relevance-dimension test assertions
+    redundant: bool = False  # tag: duplicate/unnecessary call → call-necessity dim
+    wrong_value: bool = False  # tag: schema-valid call, semantically wrong arg value
+    type_mismatch: bool = False  # tag: arg value violates the schema's declared type
 
 
 @dataclass
