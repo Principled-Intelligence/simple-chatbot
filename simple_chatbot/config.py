@@ -43,6 +43,10 @@ class SimpleChatbotConfig(BaseModel):
     max_tool_rounds: int = 3
     system_prompt: str | None = None
 
+    # Scenario engine: server-level override of a scenario's own `mode`.
+    # None = honor each scenario's per-scenario default.
+    scenario_mode: Literal["deterministic", "live"] | None = None
+
     # Sampling parameters forwarded to litellm — all default None (use model defaults).
     temperature: float | None = None
     top_p: float | None = None
