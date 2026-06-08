@@ -136,7 +136,11 @@ def build_output_items(result: ChatResult) -> list[dict]:
                     id=_fco_id(),
                     call_id=msg["tool_call_id"],
                     output=msg.get("content") or "",
-                    status="completed",
+                    # Errored tool calls are still fed back to the model, but
+                    # the wire status must reflect that the call did not succeed.
+                    # The Responses item status enum has no "failed", so an
+                    # error maps to "incomplete".
+                    status="incomplete" if msg.get("is_error") else "completed",
                 ).model_dump()
             )
 

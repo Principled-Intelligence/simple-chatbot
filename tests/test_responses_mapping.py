@@ -163,11 +163,55 @@ class BuildOutputItemsTests(unittest.TestCase):
                     {"id": "c1", "type": "function", "function": {"name": "search_documents", "arguments": "{not"}},
                 ],
             },
-            {"role": "tool", "tool_call_id": "c1", "name": "search_documents", "content": "Tool error: bad JSON"},
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "name": "search_documents",
+                "content": "Tool error: bad JSON",
+                "is_error": True,
+            },
         ]
         items = build_output_items(_chat_result("recovered", tool_messages))
         fco = next(it for it in items if it["type"] == "function_call_output")
         self.assertIn("Tool error", fco["output"])
+
+    def test_successful_tool_output_status_completed(self):
+        tool_messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "name": "search_documents", "content": "RESULT"},
+        ]
+        items = build_output_items(_chat_result("final", tool_messages))
+        fco = next(it for it in items if it["type"] == "function_call_output")
+        self.assertEqual(fco["status"], "completed")
+
+    def test_errored_tool_output_status_incomplete(self):
+        # A tool that errored (e.g. executor raised RateLimitError) is still fed
+        # back to the model, but its function_call_output must not be reported
+        # as "completed".
+        tool_messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "name": "search_documents",
+                "content": "Tool error: litellm.RateLimitError: 429 RESOURCE_EXHAUSTED",
+                "is_error": True,
+            },
+        ]
+        items = build_output_items(_chat_result("sorry, rate limited", tool_messages))
+        fco = next(it for it in items if it["type"] == "function_call_output")
+        self.assertEqual(fco["status"], "incomplete")
+        self.assertIn("RateLimitError", fco["output"])
 
     def test_each_item_has_unique_stable_id(self):
         items = build_output_items(_chat_result("hi"))
