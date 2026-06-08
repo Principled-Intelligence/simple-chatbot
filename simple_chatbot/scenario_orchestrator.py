@@ -15,6 +15,7 @@ import json
 from loguru import logger
 
 from simple_chatbot.agent import ChatResult
+from simple_chatbot.conversation_state import ConvState
 from simple_chatbot.scenario import ROUTE_TOOL_NAME, Agent as ScenarioAgent, Scenario
 from simple_chatbot.scenario_catalog import build_responses_tools
 from simple_chatbot.scenario_provider import DeterministicProvider, ProviderDecision
@@ -33,7 +34,13 @@ class ScenarioOrchestrator:
         self.max_rounds = max_rounds
         self._tools_by_name = {t.name: t for t in scenario.all_tools()}
 
-    async def chat(self, messages: list[dict], start_agent: str | None = None) -> ChatResult:
+    async def chat(
+        self,
+        messages: list[dict],
+        start_agent: str | None = None,
+        state: ConvState | None = None,
+    ) -> ChatResult:
+        conv_state = state if state is not None else ConvState()
         turn_idx = sum(1 for m in messages if m.get("role") == "user")
         active = self._resolve_start(start_agent)
         tool_messages: list[dict] = []
@@ -75,7 +82,7 @@ class ScenarioOrchestrator:
                 for tc in tool_calls:
                     name = tc["function"]["name"]
                     raw = tc["function"]["arguments"]
-                    output, target = self._execute(active, name, raw)
+                    output, target = self._execute(active, name, raw, conv_state)
                     if target is not None:
                         switch_to = target
                     tool_messages.append(
@@ -115,7 +122,7 @@ class ScenarioOrchestrator:
                 ).warning("Unknown start_agent; falling back to entry")
         return self.scenario.agent(self.scenario.entry)
 
-    def _execute(self, active, name: str, raw: str) -> tuple[str, str | None]:
+    def _execute(self, active, name: str, raw: str, state: ConvState) -> tuple[str, str | None]:
         """Return (output_text, switch_target). switch_target is set only for a
         valid route call."""
         if name == ROUTE_TOOL_NAME:
@@ -139,7 +146,10 @@ class ScenarioOrchestrator:
         if err:
             return f"Tool error: {err}", None
         try:
-            result = tool.func(**args)
+            if tool.wants_state:
+                result = tool.func(state=state, **args)
+            else:
+                result = tool.func(**args)
         except Exception as exc:  # missing-required, etc. — surfaced as a tool error
             return f"Tool error: {exc}", None
         return (result if isinstance(result, str) else json.dumps(result)), None

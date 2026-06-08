@@ -3,6 +3,7 @@ import asyncio
 import json
 import unittest
 
+from simple_chatbot.conversation_state import ConvState
 from simple_chatbot.scenario import Agent, Call, Final, MalformedCall, Route, Scenario, UnknownToolCall, tool
 from simple_chatbot.scenario_provider import DeterministicProvider
 from simple_chatbot.scenario_orchestrator import ScenarioOrchestrator
@@ -181,3 +182,35 @@ class OrchestratorResumeTests(unittest.TestCase):
             if m["role"] == "assistant" and m.get("tool_calls")
         )
         self.assertEqual(first_call, "route")
+
+
+@tool
+def bump(state) -> dict:
+    """Increment a per-conversation counter and return it."""
+    state["count"] = state.get("count", 0) + 1
+    return {"count": state["count"]}
+
+
+class OrchestratorStateInjectionTests(unittest.TestCase):
+    def _scenario(self):
+        return Scenario(
+            id="counter",
+            entry="worker",
+            agents=[
+                Agent("worker", tools=[bump], script=[Call(bump, {}), Final("done")]),
+            ],
+        )
+
+    def test_stateful_tool_receives_and_mutates_injected_state(self):
+        state = ConvState()
+        orch = ScenarioOrchestrator(self._scenario(), DeterministicProvider())
+        result = asyncio.run(orch.chat([{"role": "user", "content": "go"}], state=state))
+        bump_out = next(m for m in result.tool_messages if m.get("name") == "bump")
+        self.assertEqual(json.loads(bump_out["content"]), {"count": 1})
+        self.assertEqual(state["count"], 1)
+
+    def test_stateful_tool_works_without_explicit_state(self):
+        orch = ScenarioOrchestrator(self._scenario(), DeterministicProvider())
+        result = asyncio.run(orch.chat([{"role": "user", "content": "go"}]))
+        bump_out = next(m for m in result.tool_messages if m.get("name") == "bump")
+        self.assertEqual(json.loads(bump_out["content"]), {"count": 1})
