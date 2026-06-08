@@ -13,6 +13,7 @@ import litellm
 from simple_chatbot.agent import Agent, sampling_kwargs
 from simple_chatbot.config import SimpleChatbotConfig
 from simple_chatbot.conversation_logger import ConversationLogger, derive_conversation_id
+from simple_chatbot.conversation_state import ConversationStateStore
 from simple_chatbot.guard import ScopeGuardGate
 from simple_chatbot.indexer import Indexer
 from simple_chatbot.responses import (
@@ -38,6 +39,10 @@ _response_store: ResponseStore | None = None
 _scenario_registry: dict | None = None
 _acompletion: Callable[..., Awaitable[Any]] | None = None
 _misbehavior_policy: MisbehaviorPolicy | None = None
+
+# Per-conversation mock-tool state for scenario fixtures. Defaulted at import so
+# tests that poke server globals (rather than calling init) still find a store.
+_conversation_state_store: ConversationStateStore = ConversationStateStore()
 
 
 def _require_config() -> SimpleChatbotConfig:
@@ -93,7 +98,7 @@ def init(
     acompletion: Callable[..., Awaitable[Any]] | None = None,
     tools: list[ToolDef] | None = None,
 ) -> None:
-    global _config, _agent, _conversation_logger, _response_store, _scenario_registry, _acompletion, _misbehavior_policy
+    global _config, _agent, _conversation_logger, _response_store, _scenario_registry, _acompletion, _misbehavior_policy, _conversation_state_store
     _config = config
     _acompletion = acompletion
     gate: ScopeGuardGate | None = None
@@ -124,6 +129,7 @@ def init(
         ).warning("Misbehavior injection ENABLED — evil RAG agent active (not for production)")
     _conversation_logger = ConversationLogger(config.conversation_log_dir)
     _response_store = ResponseStore()
+    _conversation_state_store = ConversationStateStore()
     _scenario_registry = load_fixtures()
     if config.default_fixture and config.default_fixture not in _scenario_registry:
         raise ValueError(
@@ -376,7 +382,10 @@ async def responses_create(request: Request, body: ResponsesRequest):
                 if prior_entry and prior_entry.get("model") == effective_model
                 else None
             )
-            result = await orchestrator.chat(messages, start_agent=start_agent)
+            state = await _conversation_state_store.get_or_create(conversation_id)
+            result = await orchestrator.chat(
+                messages, start_agent=start_agent, state=state
+            )
         else:
             # NOTE: the policy log is shared across requests and this slice is
             # not request-isolated; under concurrent requests a response may
