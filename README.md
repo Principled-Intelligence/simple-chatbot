@@ -22,6 +22,7 @@ models or retrieval settings without adopting a production platform.
 | Testing OpenAI-compatible chat clients        | Streaming chat completions                         |
 | Trying hosted or local LiteLLM model backends | Managed document ingestion pipelines               |
 | Learning a compact agentic RAG flow           | Large-scale observability or deployment automation |
+| Authoring agentic traces to test evaluators   | Production multi-agent orchestration               |
 
 ## At a Glance
 
@@ -134,6 +135,14 @@ The app does not load `.env` automatically.
   chunks.
 - Optional ScopeGuard pre-LLM classification for blocking out-of-scope or
   restricted requests.
+- A **scenario fixture engine**: code-authored multi-agent scenarios
+  (routing/handoff, parallel fan-out, RAG, deliberate misbehavior) served as
+  selectable "models" that emit faithful Responses API traces for testing
+  downstream tool-supervisor evaluators.
+- An opt-in **evil RAG agent** that injects seeded, labeled misbehavior into the
+  real retrieval pipeline, producing `(real trace, ground-truth label)` pairs.
+- Per-chatbot **AI Service Descriptions (AISD)** printed at startup so the active
+  bot's capability surface can be copy-pasted into an external tester.
 
 ## Common Configuration
 
@@ -150,6 +159,9 @@ behavior:
 | Require API auth                         | `uv run simple-chatbot serve --docs-dir ./docs --api-key "dev-secret"`                                            |
 | Control sampling                         | `uv run simple-chatbot serve --docs-dir ./docs --temperature 0.2 --top-p 0.9`                                     |
 | Enable model reasoning (Gemini 3+, etc.) | `uv run simple-chatbot serve --docs-dir ./docs --chat-model vertex_ai/gemini-3.5-flash --reasoning-effort medium` |
+| Serve a scenario fixture by default      | `uv run simple-chatbot serve --docs-dir /tmp/empty --default-fixture cs-routing`                                  |
+| Run fixtures live (model-driven)         | `uv run simple-chatbot serve --docs-dir ./docs --scenario-mode live`                                             |
+| Enable the evil RAG agent                | `uv run simple-chatbot serve --docs-dir ./docs --misbehavior-rate 0.5 --misbehavior-seed 7`                      |
 | Run offline (no API keys)                | `SIMPLE_CHATBOT_SCRIPTED_LLM=1 uv run simple-chatbot serve --docs-dir /tmp/empty`                                 |
 
 By default, the API binds to `127.0.0.1` and does not require a key. If you bind
@@ -431,6 +443,141 @@ curl -X POST http://localhost:15078/v1/responses -H 'Content-Type: application/j
   -d '{"input": "[reasoning] calculate the cost"}'
 ```
 
+## Scenario fixtures
+
+Beyond the single RAG agent, the server can serve **code-authored scenarios**:
+small multi-agent topologies (a router that hands off to specialist subagents,
+parallel tool fan-out, retrieval-then-contradict, deliberate misbehavior) that
+emit faithful Responses API traces. The intended consumer is an external
+tool-supervisor evaluator that ingests the trace and judges the agent's tool
+use — the fixtures are a way to generate varied, reproducible traces to test it.
+
+Each fixture is a Python module under [simple_chatbot/fixtures/](simple_chatbot/fixtures/)
+that exposes a module-level `scenario: Scenario`. Fixtures are authored with a
+small typed builder API (`Scenario`, `Agent`, the `@tool` decorator, and step
+constructors `Call`, `Route`, `Final`, `Parallel`, `MalformedCall`,
+`UnknownToolCall`). A `@tool`-decorated function generates its own JSON Schema
+from the signature, and its body is the deterministic stub — one definition, no
+hand-written schema dicts.
+
+The registry auto-discovers every fixture and exposes each one as a selectable
+model:
+
+```bash
+# List the built-in fixtures (alongside the configured chat model) ...
+curl http://localhost:8000/v1/models
+
+# ... and drive one by passing its id as the model.
+curl -X POST http://localhost:8000/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{"model": "cs-routing", "input": "I need a refund on invoice INV-1."}'
+```
+
+A whole agent-A→B→… topology collapses into **one** `/v1/responses` output
+array (one evaluator turn): a `route` call and the routed subagent's calls land
+in the same per-turn window. The tool catalog — the union of every agent's tools
+plus each router's generated `route` tool — is published on the response's
+`tools` field so an evaluator can resolve any call (including the routing
+decision itself).
+
+Built-in fixtures:
+
+| Fixture id            | What it exercises                                                        |
+| --------------------- | ------------------------------------------------------------------------ |
+| `cs-routing`          | Dispatcher routing to a billing agent or human escalation                |
+| `multi-round-routing` | Two-hop handoff: front desk → tier-1 → tier-2, all in one turn           |
+| `parallel`            | One agent fanning out two read calls in a single `Parallel` round        |
+| `rag-ignore`          | Retrieval-as-tool returns chunks; the final answer contradicts them      |
+| `escalation`          | Dispatcher routing straight to a terminal human agent                    |
+| `relevance-probe`     | Irrelevant / wrong-value / redundant calls (relevance + call-necessity)  |
+| `validity-probe`      | Unknown-tool, malformed-args, required-arg, and type-mismatch knobs      |
+| `support-swarm`       | Live router ↔ 3 stateful subagents + human escalation (see below)        |
+
+### Deterministic vs live mode
+
+- **Deterministic** (default): a `DeterministicProvider` replays the agent's
+  authored `script` — no API key, reproducible, CI-friendly. Canonical fixtures
+  have golden-trace snapshots locking their output.
+- **Live**: a `LiveProvider` drives each round through the configured chat model
+  with the active agent's system prompt and scoped tools, ignoring the script.
+  Misbehavior knobs are deterministic-only; live runs simply produce well-formed
+  model-driven calls.
+
+Each fixture declares its own default mode; `--scenario-mode`
+(or `SIMPLE_CHATBOT_SCENARIO_MODE`) overrides it server-wide. Set
+`--default-fixture <id>` (or `SIMPLE_CHATBOT_DEFAULT_FIXTURE`) so clients that
+can't set `model` still reach a fixture — an explicitly named fixture always
+wins.
+
+### Stateful multi-agent swarm (`support-swarm`)
+
+`support-swarm` runs in **live** mode: a router hands off (and control sticks
+via the persisted `active_agent`) to one of three specialist subagents —
+order-tracking, customer-data, billing — or a terminal human-escalation agent,
+and each subagent can route back to the router on a later turn. Its tools are
+**stateful**: a tool opts into per-conversation state by declaring a `state`
+parameter (`@tool` hides it from the generated schema and the orchestrator
+injects it at call time), so a mutation like "I cancelled this order" persists
+across turns of the same conversation while staying isolated across parallel
+conversations. The subagents share a `lookup_policy` tool backed by the policy /
+FAQ documents under [kbs/support_swarm/](kbs/support_swarm/), so their actions
+stay consistent with written policy and the trace carries policy retrieval.
+
+## Evil RAG agent
+
+Opt in with `--misbehavior-rate` (or `SIMPLE_CHATBOT_MISBEHAVIOR_RATE`) to run an
+**evil counterpart** of the real RAG agent that injects seeded, labeled
+misbehavior across the retrieval pipeline. The good path is the unmodified
+production agent; the evil twin is pure composition over the agent's
+`acompletion` + `tools` seams, so production code is untouched. It exists to
+**test supervisors**: a good run should pass, an evil run should be flagged, and
+the injection log is the ground truth to check that against.
+
+```bash
+uv run simple-chatbot serve --docs-dir ./docs \
+  --misbehavior-rate 0.5 \
+  --misbehavior-modes poison_retrieval,drop_retrieval,ignore_retrieval \
+  --misbehavior-seed 7
+```
+
+At each eligible pipeline site the policy fires with probability `rate` and picks
+an enabled mode. Available modes: `poison_retrieval`, `drop_retrieval`
+(mutate retrieved chunks — strong labels), `ignore_retrieval`, `wrong_value`
+(prompt-steered — weak labels), and `redundant_search`, `malformed_search`,
+`unknown_tool` (mutate tool calls on a tool-call round — strong labels). With the
+same seed the policy makes the same per-site decisions. The per-turn injection
+labels are surfaced on the `/v1/responses` payload as a non-standard
+`misbehavior_injections` field (`{stage, mode, turn, round, detail}`) and written
+to the conversation log, so a consumer receives `(real trace, ground-truth label)`
+pairs. Misbehavior is disabled by default; the server logs a warning when it is on.
+
+## AI Service Descriptions
+
+Each fixture (and the live RAG agent) has a markdown **AI Service Description**
+under [simple_chatbot/aisd/](simple_chatbot/aisd/) describing its capability
+surface — tools, domains, routing/handoff, multi-turn behavior. At startup the
+server prints the **active default** chatbot's AISD to stdout (the fixture from
+`--default-fixture`, else the `live-rag` description) so it can be copy-pasted
+into an external tester that has no API integration. The AISD describes
+capabilities only — it never reveals evaluation intent, and the good and evil RAG
+agents share one identical `live-rag` description so a tester is not tipped off
+which variant it is probing.
+
+## Interactive REPL
+
+[chat.py](chat.py) is a multi-turn REPL for `/v1/responses` that drives the
+server through the OpenAI Python SDK (so it doubles as a wire-format compatibility
+check). It renders paired tool-call / tool-result blocks, reasoning, and a
+per-turn meta line, and tracks the conversation across turns.
+
+```bash
+uv run python chat.py                                   # defaults to http://localhost:15078/v1
+uv run python chat.py --base-url http://localhost:8000/v1
+```
+
+REPL commands: `/help`, `/id` (conversation id + log path), `/reset` (new
+thread), `/verbose` (toggle the meta line), `/quit`.
+
 ## How It Works
 
 ```text
@@ -473,6 +620,14 @@ values. Local `.env` files are ignored by git.
 | `OPENAI_API_KEY`         | LiteLLM        | Provider API key for OpenAI-backed chat and embedding models            |
 | `ORBITALS_API_KEY`       | ScopeGuard     | Hosted ScopeGuard API key when `--guard-api-url` is not set             |
 | `SIMPLE_CHATBOT_API_KEY` | simple-chatbot | API key required by `/v1/chat/completions` when `--api-key` is not used |
+| `SIMPLE_CHATBOT_DEFAULT_FIXTURE` | simple-chatbot | Default fixture id for clients that can't set `model`; fallback for `--default-fixture` |
+| `SIMPLE_CHATBOT_SCENARIO_MODE` | simple-chatbot | `deterministic` or `live` override for fixtures; fallback for `--scenario-mode` |
+| `SIMPLE_CHATBOT_MISBEHAVIOR_RATE` | simple-chatbot | Evil RAG injection probability (0.0–1.0); fallback for `--misbehavior-rate` |
+| `SIMPLE_CHATBOT_MISBEHAVIOR_MODES` | simple-chatbot | Comma-separated misbehavior modes; fallback for `--misbehavior-modes` |
+| `SIMPLE_CHATBOT_MISBEHAVIOR_SEED` | simple-chatbot | Seed for reproducible misbehavior; fallback for `--misbehavior-seed` |
+| `SIMPLE_CHATBOT_REASONING_EFFORT` | simple-chatbot | Reasoning/thinking effort; fallback for `--reasoning-effort` |
+| `SIMPLE_CHATBOT_SCRIPTED_LLM` | simple-chatbot | `1` runs fully offline with canned LLM + tools (no API calls) |
+| `EXHAUSTIVE_TOOL_USE`    | simple-chatbot | `1` (with scripted LLM) cycles every scripted turn through all tools / trace shapes |
 | `BASE_URL`               | smoke test     | Target server URL for `./smoke_test.sh`                                 |
 
 </details>
@@ -499,6 +654,11 @@ simple-chatbot serve --docs-dir PATH [OPTIONS]
 | `--host`                      | `127.0.0.1`                                  | Server bind address                                                                                                                            |
 | `--port`                      | `8000`                                       | Server port                                                                                                                                    |
 | `--api-key`                   | `None`                                       | Require this key on `/v1/chat/completions`; falls back to `SIMPLE_CHATBOT_API_KEY`                                                             |
+| `--default-fixture`           | `None`                                       | Fixture id served on `/v1/responses` when no known fixture is named; falls back to `SIMPLE_CHATBOT_DEFAULT_FIXTURE`                            |
+| `--scenario-mode`             | `None`                                       | Override fixture run mode: `deterministic` or `live`; unset honors each fixture's mode; falls back to `SIMPLE_CHATBOT_SCENARIO_MODE`           |
+| `--misbehavior-rate`          | `None`                                       | Enable the evil RAG agent; injection probability (0.0–1.0); falls back to `SIMPLE_CHATBOT_MISBEHAVIOR_RATE`                                    |
+| `--misbehavior-modes`         | `None`                                       | Comma-separated enabled misbehavior modes; falls back to `SIMPLE_CHATBOT_MISBEHAVIOR_MODES`                                                    |
+| `--misbehavior-seed`          | `0`                                          | Seed for reproducible misbehavior decisions; falls back to `SIMPLE_CHATBOT_MISBEHAVIOR_SEED`                                                   |
 | `--max-tool-rounds`           | `5`                                          | Max agentic loop iterations per request                                                                                                        |
 | `--system-prompt`             | `None`                                       | System prompt text, or `@/path/to/file.txt` to load from disk                                                                                  |
 | `--conversation-log-dir`      | `./conversations`                            | Directory for conversation JSONL logs                                                                                                          |
@@ -529,15 +689,31 @@ simple-chatbot serve --docs-dir PATH [OPTIONS]
 
 ```text
 simple_chatbot/
-├── agent.py                 # Agentic chat loop (LiteLLM + tool calls)
+├── agent.py                 # Agentic RAG chat loop (LiteLLM + tool calls)
 ├── guard.py                 # ScopeGuard pre-LLM gate
 ├── cli.py                   # simple-chatbot serve Typer CLI
 ├── config.py                # Pydantic config
 ├── conversation_logger.py   # JSONL conversation logs
+├── conversation_state.py    # Conversation-scoped state store for fixture tools
 ├── indexer.py               # ChromaDB + LiteLLM embeddings
 ├── loader.py                # txt / md / pdf / docx loaders + chunking
+├── responses.py             # Responses API trace serialization
+├── tools.py                 # Built-in tool definitions + execution
 ├── server.py                # FastAPI OpenAI-compatible endpoints
+├── service_description.py   # AISD resolver + startup printer
+├── misbehavior.py           # Seeded MisbehaviorPolicy + mode vocabulary
+├── evil_rag.py              # Evil RAG composition (evil_search / evil_acompletion)
+├── scenario.py              # Scenario / Agent model + @tool + step constructors
+├── scenario_provider.py     # Deterministic + live providers
+├── scenario_orchestrator.py # Active-agent state machine / round loop
+├── scenario_catalog.py      # Projects fixture tools into Response.tools
+├── scenario_registry.py     # Auto-discovers fixtures/*.py
+├── scripted_llm.py          # Offline scripted LLM + multi-tool harness
+├── fixtures/                # Code-authored scenarios (one module per fixture)
+├── aisd/                    # Per-fixture AI Service Descriptions (markdown)
 └── _logging.py              # Loguru setup
+kbs/support_swarm/           # Policy / FAQ docs read by the support-swarm fixture
+chat.py                      # Interactive /v1/responses REPL
 main.py                      # python main.py entrypoint
 start.sh                     # Example hosted OpenAI launcher
 vllm_serve.sh                # Example local vLLM backend
