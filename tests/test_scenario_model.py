@@ -143,6 +143,21 @@ class ScenarioModelTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Scenario(id="x", entry="a", agents=[Agent("a"), Agent("a")])
 
+    def test_validate_rejects_call_to_tool_agent_does_not_own(self):
+        inv, _ = self._tools()
+        with self.assertRaises(ValueError):
+            # agent "a" has no tools but its script calls `inv`
+            Scenario(id="x", entry="a", agents=[Agent("a", script=[Call(inv, {"invoice_id": "1"})])])
+
+    def test_validate_rejects_user_tool_named_route(self):
+        @tool
+        def route(agent: str) -> dict:
+            """A tool that collides with the generated handoff tool."""
+            return {"agent": agent}
+
+        with self.assertRaises(ValueError):
+            Scenario(id="x", entry="a", agents=[Agent("a", tools=[route])])
+
 
 class ScenarioModeTests(unittest.TestCase):
     def test_mode_defaults_to_deterministic(self):
@@ -187,6 +202,10 @@ class ParallelStepTests(unittest.TestCase):
     def test_parallel_rejects_nested_parallel(self):
         with self.assertRaises(ValueError):
             Scenario(id="bad", entry="a", agents=[Agent("a", script=[Parallel([Parallel([])])])])
+
+    def test_parallel_rejects_empty_steps(self):
+        with self.assertRaises(ValueError):
+            Scenario(id="bad", entry="a", agents=[Agent("a", script=[Parallel([])])])
 
 
 class CallTagTests(unittest.TestCase):

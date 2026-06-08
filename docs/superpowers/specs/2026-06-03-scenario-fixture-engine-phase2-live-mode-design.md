@@ -54,7 +54,7 @@ re-entering the entry agent.
 |---|---|---|
 | **Live engine** | **Hand-rolled `litellm` loop behind the existing `decide()` seam.** No OpenAI Agents SDK. | The seam is per-round/single-step; the SDK wants to own the whole loop + handoffs, which would mean bypassing the orchestrator and re-serializing SDK run items into our wire shape — exactly the "client-role re-serialization" the parent spec argues against. Hand-rolled keeps one orchestrator, one wire path, and a key-free CI. |
 | **Active-agent persistence** | **Persist the in-charge agent across turns, in both modes.** | A routed follow-up (`previous_response_id`) must resume *as the routed agent* (its prompt + scoped tools), not re-enter the dispatcher. `previous_response_id` already restores message history; the active-agent pointer is the missing piece (it is orchestrator state, not message content). |
-| **Terminal on resume** | **A resumed terminal agent re-emits its `escalation_message` and ends the turn.** | "Handed to a human" is a sticky state; re-emitting is the faithful behavior. |
+| **Terminal on resume** | **A resumed terminal agent ends the turn with a "conversation closed" message (`ESCALATED_CLOSED_MESSAGE`), not a replay of `escalation_message`.** | **(Revised — superseded the original "re-emit" rule, see note below.)** "Handed to a human" is a sticky, *closed* state; replaying the escalation line on every follow-up reads as a loop. Announce the escalation once, on the turn it happens; afterwards tell the user the chat is closed and to start a new one. The original direct-entry-into-terminal case (entry agent is terminal, not a resume) still emits `escalation_message`. |
 | **Knobs in live mode** | **Live mode ignores `script` entirely; misbehavior knobs are deterministic-mode-only (documented).** | Simplest and most honest: no coupling between `LiveProvider` and the authored script. A "misbehavior" fixture run live simply produces well-formed, model-driven calls. |
 | **Mode switch** | **Per-scenario `mode` default + server `scenario_mode` override; override wins.** | Deterministic stays the canonical default; an operator can force a whole server live without editing fixtures. |
 | **Live model config** | **Reuse the `acompletion` handed to `init()` plus `config.chat_model` / `chat_api_base` / sampling params.** | The scenario id is the wire `model` (used for selection), so it cannot also name the upstream model — live mode targets the server's configured chat model. |
@@ -130,10 +130,12 @@ build_response → output[] + Response.tools     response store ← session_mess
   - `active = scenario.agent(start_agent)` when `start_agent` is a valid agent
     name, else `scenario.agent(scenario.entry)` (unknown name → entry fallback +
     a `logger.warning`).
-  - If the resolved start agent is `terminal`, emit its `escalation_message`
-    (or `"(escalated)"`) and end the turn immediately — the "re-emit on resume"
-    rule. (This generalizes the existing post-switch terminal check to also
-    cover the start-of-turn case.)
+  - If the resolved start agent is `terminal`: when it is a *resume* of the same
+    terminal agent (`start_agent` matches), end the turn with
+    `ESCALATED_CLOSED_MESSAGE` (the conversation is closed — see the revised
+    "Terminal on resume" decision above). When it is direct *entry* into a
+    terminal agent (not a resume), emit its `escalation_message` (or
+    `"(escalated)"`). Either way, end the turn immediately.
   - At turn end, set `ChatResult.active_agent = active.name`.
 
 - **`scenario.py` — mode field.**
@@ -197,7 +199,8 @@ build_response → output[] + Response.tools     response store ← session_mess
 - **Unit — orchestrator resume:**
   - `start_agent` resumes mid-topology (e.g. starts in billing, no route call).
   - Unknown/stale `start_agent` falls back to `entry` (logged).
-  - A resumed terminal agent re-emits its escalation and ends the turn.
+  - A resumed terminal agent ends the turn with the closed-conversation message;
+    direct entry into a terminal agent still emits its escalation.
   - `ChatResult.active_agent` equals the in-charge agent at turn end.
 - **Server / E2E (fake `acompletion`):**
   - `previous_response_id` round-trip resumes the routed agent (the core

@@ -78,6 +78,10 @@ class Call:
 
     tool: ScenarioTool
     args: dict = field(default_factory=dict)
+    # The tags below are descriptive metadata for eval graders, NOT enforced
+    # behavior: the authored `args` already carry the misbehavior (e.g. a
+    # wrong-type value), so the orchestrator plays the call verbatim. The tags
+    # let graders key on the authoring intent without re-deriving it.
     irrelevant: bool = False  # tag for relevance-dimension test assertions
     redundant: bool = False  # tag: duplicate/unnecessary call → call-necessity dim
     wrong_value: bool = False  # tag: schema-valid call, semantically wrong arg value
@@ -184,8 +188,19 @@ class Scenario:
                         f"agent {a.name!r} routes to unknown agent {target!r}"
                     )
         for a in self.agents:
+            agent_tool_names = {t.name for t in a.tools}
+            # A user tool named `route` would shadow the generated handoff tool.
+            if ROUTE_TOOL_NAME in agent_tool_names:
+                raise ValueError(
+                    f"agent {a.name!r} declares a tool named {ROUTE_TOOL_NAME!r}, "
+                    f"which collides with the generated handoff tool"
+                )
             for step in a.script:
                 if isinstance(step, Parallel):
+                    if not step.steps:
+                        raise ValueError(
+                            f"empty Parallel step in agent {a.name!r}"
+                        )
                     for inner in step.steps:
                         if not isinstance(inner, (Call, MalformedCall, UnknownToolCall)):
                             raise ValueError(
@@ -193,3 +208,12 @@ class Scenario:
                                 f"Call/MalformedCall/UnknownToolCall, got "
                                 f"{type(inner).__name__}"
                             )
+                # Every Call/MalformedCall must reference a tool the agent owns.
+                # (UnknownToolCall is the deliberate absent-tool knob — skipped.)
+                call_steps = step.steps if isinstance(step, Parallel) else [step]
+                for cs in call_steps:
+                    if isinstance(cs, (Call, MalformedCall)) and cs.tool.name not in agent_tool_names:
+                        raise ValueError(
+                            f"agent {a.name!r} calls tool {cs.tool.name!r} "
+                            f"not in its own tools"
+                        )

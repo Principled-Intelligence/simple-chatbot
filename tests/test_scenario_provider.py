@@ -198,6 +198,44 @@ class LiveProviderTests(unittest.TestCase):
         self.assertIn("boom", d.final)
         self.assertFalse(d.calls)
 
+    def test_empty_choices_degrades_instead_of_raising(self):
+        # A successful response object with no choices (e.g. content-filter
+        # block) must degrade, not raise IndexError -> 500.
+        class _Empty:
+            choices = []
+            usage = None
+
+        agent = Agent("billing", tools=[lookup_invoice])
+        d = asyncio.run(_live({}, _Empty()).decide(agent, messages=[], tool_messages=[]))
+        self.assertIsNotNone(d.final)
+        self.assertFalse(d.calls)
+
+    def test_replayed_assistant_message_strips_reasoning_content(self):
+        # On round 2+, the orchestrator re-feeds prior assistant turns that carry
+        # reasoning_content (kept for the Responses adapter). Providers reject it,
+        # so the working messages sent to litellm must be stripped — without
+        # mutating the caller's tool_messages list.
+        agent = Agent("billing", tools=[lookup_invoice])
+        captured: dict = {}
+        tool_messages = [
+            {
+                "role": "assistant",
+                "content": "thinking out loud",
+                "reasoning_content": "secret chain of thought",
+                "tool_calls": [],
+            },
+            {"role": "tool", "tool_call_id": "c1", "name": "lookup_invoice", "content": "{}"},
+        ]
+        provider = _live(captured, _Response(_Message(content="ok"), "stop"))
+        asyncio.run(provider.decide(agent, messages=[], tool_messages=tool_messages))
+
+        sent = captured["messages"]
+        self.assertTrue(all("reasoning_content" not in m for m in sent))
+        # the tool message passes through untouched
+        self.assertIn({"role": "tool", "tool_call_id": "c1", "name": "lookup_invoice", "content": "{}"}, sent)
+        # caller's list is not mutated
+        self.assertEqual(tool_messages[0]["reasoning_content"], "secret chain of thought")
+
 
 class ParallelDecisionTests(unittest.TestCase):
     def test_parallel_yields_multiple_calls_in_order(self):

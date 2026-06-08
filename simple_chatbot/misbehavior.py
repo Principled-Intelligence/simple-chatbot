@@ -84,6 +84,14 @@ class MisbehaviorPolicy:
         self._log.append(injection)
         return injection
 
+    def rollback(self, injection: Injection) -> bool:
+        """Undo a just-logged injection when the mutation it described fails, so
+        no phantom entry survives. Only pops if it is still the last entry."""
+        if self._log and self._log[-1] is injection:
+            self._log.pop()
+            return True
+        return False
+
     @property
     def injections(self) -> list[Injection]:
         return list(self._log)

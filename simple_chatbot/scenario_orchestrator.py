@@ -10,6 +10,7 @@ output array (= one Spectral turn). Tool `call_id`s are deterministic
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from loguru import logger
@@ -18,7 +19,11 @@ from simple_chatbot.agent import ChatResult
 from simple_chatbot.conversation_state import ConvState
 from simple_chatbot.scenario import ROUTE_TOOL_NAME, Agent as ScenarioAgent, Scenario
 from simple_chatbot.scenario_catalog import build_responses_tools
-from simple_chatbot.scenario_provider import DeterministicProvider, ProviderDecision
+from simple_chatbot.scenario_provider import (
+    DeterministicProvider,
+    Provider,
+    ProviderDecision,
+)
 from simple_chatbot.tools import _parse_args
 
 # Returned when a turn resumes a conversation that a PRIOR turn already escalated
@@ -36,7 +41,7 @@ class ScenarioOrchestrator:
     def __init__(
         self,
         scenario: Scenario,
-        provider: DeterministicProvider | None = None,
+        provider: Provider | None = None,
         max_rounds: int = 8,
     ) -> None:
         self.scenario = scenario
@@ -104,11 +109,21 @@ class ScenarioOrchestrator:
                 for tc in tool_calls:
                     name = tc["function"]["name"]
                     raw = tc["function"]["arguments"]
-                    output, target = self._execute(active, name, raw, conv_state)
+                    # Tool funcs are sync and may do blocking IO (e.g.
+                    # lookup_policy reads a KB file); keep them off the event loop.
+                    output, target, is_error = await asyncio.to_thread(
+                        self._execute, active, name, raw, conv_state
+                    )
                     if target is not None:
                         switch_to = target
                     tool_messages.append(
-                        {"role": "tool", "tool_call_id": tc["id"], "name": name, "content": output}
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "name": name,
+                            "content": output,
+                            "is_error": is_error,
+                        }
                     )
 
                 if switch_to is not None:
@@ -144,34 +159,42 @@ class ScenarioOrchestrator:
                 ).warning("Unknown start_agent; falling back to entry")
         return self.scenario.agent(self.scenario.entry)
 
-    def _execute(self, active, name: str, raw: str, state: ConvState) -> tuple[str, str | None]:
-        """Return (output_text, switch_target). switch_target is set only for a
-        valid route call."""
+    def _execute(
+        self, active, name: str, raw: str, state: ConvState
+    ) -> tuple[str, str | None, bool]:
+        """Return (output_text, switch_target, is_error). switch_target is set
+        only for a valid route call; is_error drives the function_call_output
+        wire status (errored calls map to "incomplete")."""
         if name == ROUTE_TOOL_NAME:
             args, err = _parse_args(ROUTE_TOOL_NAME, raw)
             if err:
-                return f"Tool error: {err}", None
+                return f"Tool error: {err}", None, True
             target = args.get("agent")
             if target not in active.routes:
                 return (
                     f"Tool error: agent {active.name!r} cannot route to {target!r}",
                     None,
+                    True,
                 )
-            return json.dumps({"routed": True, "agent": target}), target
+            return json.dumps({"routed": True, "agent": target}), target, False
 
         tool = self._tools_by_name.get(name)
         if tool is None:
             available = ", ".join(sorted(self._tools_by_name)) or "(none)"
-            return f"Tool error: unsupported tool {name!r}; available tools: {available}", None
+            return (
+                f"Tool error: unsupported tool {name!r}; available tools: {available}",
+                None,
+                True,
+            )
 
         args, err = _parse_args(name, raw)
         if err:
-            return f"Tool error: {err}", None
+            return f"Tool error: {err}", None, True
         try:
             if tool.wants_state:
                 result = tool.func(state=state, **args)
             else:
                 result = tool.func(**args)
         except Exception as exc:  # missing-required, etc. — surfaced as a tool error
-            return f"Tool error: {exc}", None
-        return (result if isinstance(result, str) else json.dumps(result)), None
+            return f"Tool error: {exc}", None, True
+        return (result if isinstance(result, str) else json.dumps(result)), None, False

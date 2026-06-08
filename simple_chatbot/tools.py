@@ -22,6 +22,10 @@ from simple_chatbot.loader import Document
 
 SEARCH_TOOL_NAME = "search_documents"
 
+# Invalid-JSON marker for the malformed-args knob, shared by the deterministic
+# engine and the evil agent. `scripted_llm` mirrors this same literal inline.
+MALFORMED_TOOL_ARGS = "{intentionally_malformed_json"
+
 
 SEARCH_TOOL_SCHEMA: dict = {
     "type": "function",

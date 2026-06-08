@@ -23,10 +23,25 @@ from simple_chatbot.scenario import (
     Route,
     UnknownToolCall,
 )
+from simple_chatbot.tools import MALFORMED_TOOL_ARGS as _MALFORMED_ARGS
 
-# Invalid-JSON string used for the malformed-args knob. Mirrors the marker the
-# existing scripted_llm uses for the same purpose.
-_MALFORMED_ARGS = "{intentionally_malformed_json"
+# Keys carried on trace messages for the /v1/responses adapter that providers
+# reject when an assistant message is replayed on the next round (mirrors the
+# single-agent RAG path's `_sanitize_assistant_dump`). The trace itself keeps
+# them; only the copy fed back to the model is stripped.
+_REPLAY_UNSAFE_KEYS = (
+    "reasoning_content",
+    "provider_specific_fields",
+    "thinking_blocks",
+    "audio",
+)
+
+
+def _safe_for_replay(msg: dict) -> dict:
+    """Return a copy of a trace message safe to re-feed to the provider."""
+    if not any(k in msg for k in _REPLAY_UNSAFE_KEYS):
+        return msg
+    return {k: v for k, v in msg.items() if k not in _REPLAY_UNSAFE_KEYS}
 
 
 def _planned_call(step) -> "PlannedCall":
@@ -151,7 +166,7 @@ class LiveProvider:
         if agent.system_prompt:
             working.append({"role": "system", "content": agent.system_prompt})
         working.extend(messages)
-        working.extend(tool_messages)
+        working.extend(_safe_for_replay(m) for m in tool_messages)
 
         kwargs: dict = {
             "model": self._model,
@@ -165,10 +180,10 @@ class LiveProvider:
 
         try:
             response = await self._acompletion(**kwargs)
+            choice = response.choices[0]
         except Exception as exc:  # live is best-effort: degrade, don't 500
             return ProviderDecision(final=f"(live provider error: {exc})")
 
-        choice = response.choices[0]
         msg = choice.message
         reasoning = getattr(msg, "reasoning_content", None)
         tool_calls = getattr(msg, "tool_calls", None)
@@ -188,3 +203,7 @@ class LiveProvider:
                 calls=calls, reasoning=reasoning, text=(msg.content or None)
             )
         return ProviderDecision(final=(msg.content or ""), reasoning=reasoning)
+
+
+# Either provider satisfies the orchestrator's `decide()` seam.
+Provider = DeterministicProvider | LiveProvider

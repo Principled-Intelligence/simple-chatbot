@@ -130,7 +130,7 @@ def _seq_acompletion(responses):
 
 
 class _FakeConversationLogger:
-    async def log(self, conversation_id, messages, response, chunks) -> None:
+    async def log(self, conversation_id, messages, response, chunks, misbehavior_injections=None) -> None:
         return None
 
 

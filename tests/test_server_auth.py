@@ -25,6 +25,7 @@ class _FakeConversationLogger:
         messages: list[dict],
         response: str,
         chunks: list[dict],
+        misbehavior_injections: list[dict] | None = None,
     ) -> None:
         return None
 

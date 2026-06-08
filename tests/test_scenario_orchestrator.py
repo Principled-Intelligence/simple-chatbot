@@ -157,9 +157,21 @@ class OrchestratorKnobTests(unittest.TestCase):
         result = _run(s, [{"role": "user", "content": "x"}])
         out = next(m for m in result.tool_messages if m["role"] == "tool")
         self.assertIn("Tool error", out["content"])
+        self.assertTrue(out["is_error"])  # drives function_call_output -> "incomplete"
         # the malformed args are still present on the call (for validity scoring)
         call = next(m for m in result.tool_messages if m["role"] == "assistant")
         self.assertEqual(call["tool_calls"][0]["function"]["arguments"], "{intentionally_malformed_json")
+
+    def test_successful_tool_call_is_not_flagged_as_error(self):
+        s = Scenario(
+            id="k",
+            entry="a",
+            agents=[Agent("a", tools=[lookup_invoice],
+                          script=[Call(lookup_invoice, {"invoice_id": "INV-1"}), Final("ok")])],
+        )
+        result = _run(s, [{"role": "user", "content": "x"}])
+        out = next(m for m in result.tool_messages if m["role"] == "tool")
+        self.assertFalse(out["is_error"])
 
     def test_unknown_tool_surface_as_tool_error(self):
         s = Scenario(id="k", entry="a",

@@ -127,6 +127,11 @@ def init(
         logger.bind(
             rate=config.misbehavior_rate, modes=config.misbehavior_modes
         ).warning("Misbehavior injection ENABLED — evil RAG agent active (not for production)")
+    elif config.misbehavior_rate and config.misbehavior_rate > 0:
+        logger.bind(rate=config.misbehavior_rate).warning(
+            "misbehavior_rate>0 but no misbehavior_modes set — running the GOOD "
+            "agent; set --misbehavior-modes to enable the evil RAG agent"
+        )
     _conversation_logger = ConversationLogger(config.conversation_log_dir)
     _response_store = ResponseStore()
     _conversation_state_store = ConversationStateStore()
@@ -405,8 +410,11 @@ async def responses_create(request: Request, body: ResponsesRequest):
             conversation_id=conversation_id,
         )
 
-        if scenario is None and new_injections:
-            payload["misbehavior_injections"] = [asdict(i) for i in new_injections]
+        injection_dicts = (
+            [asdict(i) for i in new_injections] if scenario is None else []
+        )
+        if injection_dicts:
+            payload["misbehavior_injections"] = injection_dicts
 
         logger.bind(
             response_id=payload["id"],
@@ -419,6 +427,7 @@ async def responses_create(request: Request, body: ResponsesRequest):
             messages=messages,
             response=result.content,
             chunks=[{"text": d.text, **d.metadata} for d in result.retrieved_chunks],
+            misbehavior_injections=injection_dicts,
         )
 
         await _require_response_store().put(

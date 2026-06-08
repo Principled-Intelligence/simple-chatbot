@@ -20,6 +20,19 @@ def _parse_guard_block_classes(s: str) -> list[str]:
     return [x.strip() for x in s.split(",") if x.strip()]
 
 
+def _parse_env_number(name: str, raw: Optional[str], cast):
+    """Parse a numeric env var, failing with an actionable message instead of a
+    bare ValueError traceback."""
+    if not raw:
+        return None
+    try:
+        return cast(raw)
+    except ValueError:
+        raise typer.BadParameter(
+            f"{name}={raw!r} is not a valid {cast.__name__}"
+        ) from None
+
+
 def _load_text_or_file(raw: Optional[str]) -> Optional[str]:
     if not raw:
         return None
@@ -111,9 +124,9 @@ def serve(
             "wrong_value. Falls back to SIMPLE_CHATBOT_MISBEHAVIOR_MODES."
         ),
     ),
-    misbehavior_seed: int = typer.Option(
-        0,
-        help="Seed for reproducible misbehavior decisions; falls back to SIMPLE_CHATBOT_MISBEHAVIOR_SEED.",
+    misbehavior_seed: Optional[int] = typer.Option(
+        None,
+        help="Seed for reproducible misbehavior decisions (default 0); falls back to SIMPLE_CHATBOT_MISBEHAVIOR_SEED.",
     ),
     max_tool_rounds: int = typer.Option(
         5, help="Max agentic loop iterations per request"
@@ -233,7 +246,9 @@ def serve(
     misbehavior_rate_raw = misbehavior_rate
     if misbehavior_rate_raw is None:
         env_rate = os.environ.get("SIMPLE_CHATBOT_MISBEHAVIOR_RATE")
-        misbehavior_rate_raw = float(env_rate) if env_rate else None
+        misbehavior_rate_raw = _parse_env_number(
+            "SIMPLE_CHATBOT_MISBEHAVIOR_RATE", env_rate, float
+        )
     misbehavior_modes_raw = misbehavior_modes or os.environ.get(
         "SIMPLE_CHATBOT_MISBEHAVIOR_MODES"
     )
@@ -242,10 +257,17 @@ def serve(
         if misbehavior_modes_raw
         else []
     )
-    env_seed = os.environ.get("SIMPLE_CHATBOT_MISBEHAVIOR_SEED")
-    misbehavior_seed_effective = (
-        misbehavior_seed if misbehavior_seed else (int(env_seed) if env_seed else 0)
-    )
+    # `0` is a valid explicit seed, so distinguish "flag not passed" (None) from
+    # an explicit value before falling back to the env var.
+    if misbehavior_seed is not None:
+        misbehavior_seed_effective = misbehavior_seed
+    else:
+        env_seed = os.environ.get("SIMPLE_CHATBOT_MISBEHAVIOR_SEED")
+        misbehavior_seed_effective = (
+            _parse_env_number("SIMPLE_CHATBOT_MISBEHAVIOR_SEED", env_seed, int)
+            if env_seed
+            else 0
+        )
     reasoning_effort_effective = reasoning_effort or os.environ.get(
         "SIMPLE_CHATBOT_REASONING_EFFORT"
     )
