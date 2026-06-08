@@ -106,6 +106,11 @@ def _seq_acompletion(responses):
     return fake
 
 
+class _FakeConversationLogger:
+    async def log(self, conversation_id, messages, response, chunks) -> None:
+        return None
+
+
 class LiveSwarmTests(unittest.TestCase):
     def _orch(self, responses):
         provider = LiveProvider(acompletion=_seq_acompletion(responses), model="test-model")
@@ -220,11 +225,6 @@ class ServerSwarmTests(unittest.TestCase):
         )
         self.assertEqual(r2.status_code, 200, r2.text)
         self.assertIn("cancelled", r2.text)
-
-
-class _FakeConversationLogger:
-    async def log(self, conversation_id, messages, response, chunks) -> None:
-        return None
 
 
 if __name__ == "__main__":

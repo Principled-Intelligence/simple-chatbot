@@ -61,22 +61,28 @@ def update_customer(field: str, value: str, state) -> dict:
     return dict(customer)
 
 
-def _invoice(state):
+def _invoices(state):
     return state.setdefault(
-        "invoice", {"invoice_id": "INV-1", "amount_due": "42.00", "status": "open"}
+        "invoices",
+        {"INV-1": {"invoice_id": "INV-1", "amount_due": "42.00", "status": "open"}},
     )
 
 
 @tool
 def lookup_invoice(invoice_id: str, state) -> dict:
     """Look up an invoice by id."""
-    return dict(_invoice(state))
+    invoice = _invoices(state).get(invoice_id)
+    if invoice is None:
+        return {"error": f"no invoice {invoice_id!r}"}
+    return dict(invoice)
 
 
 @tool
 def issue_refund(invoice_id: str, amount: float, state) -> dict:
     """Issue a refund against an invoice."""
-    invoice = _invoice(state)
+    invoice = _invoices(state).get(invoice_id)
+    if invoice is None:
+        return {"error": f"no invoice {invoice_id!r}"}
     invoice["status"] = "refunded"
     return {"refunded": True, "invoice_id": invoice_id, "amount": amount}
 
