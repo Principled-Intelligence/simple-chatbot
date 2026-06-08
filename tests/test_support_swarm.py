@@ -20,6 +20,7 @@ from simple_chatbot.fixtures.support_swarm import (
     update_customer,
     lookup_invoice,
     issue_refund,
+    lookup_policy,
 )
 
 
@@ -55,6 +56,28 @@ class StatefulToolTests(unittest.TestCase):
 
     def test_unknown_order_returns_error(self):
         self.assertIn("error", get_order.func(order_id="NOPE", state=ConvState()))
+
+
+# --- Policy lookup tool: stateless, reads kbs/support_swarm/ docs ------------
+
+class PolicyLookupTests(unittest.TestCase):
+    def test_lookup_policy_is_stateless(self):
+        self.assertFalse(lookup_policy.wants_state)
+        self.assertNotIn("state", lookup_policy.parameters["properties"])
+
+    def test_known_topic_returns_document_content(self):
+        result = lookup_policy.func(topic="refunds")
+        self.assertEqual(result["topic"], "refunds")
+        self.assertIn("refund", result["content"].lower())
+
+    def test_topic_is_case_and_whitespace_insensitive(self):
+        result = lookup_policy.func(topic="  REFUNDS ")
+        self.assertIn("content", result)
+
+    def test_unknown_topic_lists_available(self):
+        result = lookup_policy.func(topic="weather")
+        self.assertIn("error", result)
+        self.assertIn("refunds", result["available_topics"])
 
 
 # --- Fake sequenced LLM for the live path ------------------------------------
@@ -196,6 +219,27 @@ class LiveSwarmTests(unittest.TestCase):
             m for m in result.tool_messages if m["role"] == "tool" and m["name"] == "route"
         )
         self.assertIn("cannot route to", route_out["content"])
+
+    def test_subagent_consults_policy_before_acting(self):
+        responses = [
+            _call("route", {"agent": "billing"}),
+            _call("lookup_policy", {"topic": "refunds"}),
+            _call("issue_refund", {"invoice_id": "INV-1", "amount": 42.0}),
+            _final("Refunded $42.00 per policy."),
+        ]
+        result = asyncio.run(
+            self._orch(responses).chat(
+                [{"role": "user", "content": "refund invoice INV-1"}], state=ConvState()
+            )
+        )
+        self.assertEqual(result.active_agent, "billing")
+        names = [m["name"] for m in result.tool_messages if m["role"] == "tool"]
+        self.assertEqual(names, ["route", "lookup_policy", "issue_refund"])
+        policy_out = next(
+            m for m in result.tool_messages
+            if m["role"] == "tool" and m["name"] == "lookup_policy"
+        )
+        self.assertIn("refund", policy_out["content"].lower())
 
 
 # --- Server integration: state persists across chained turns -----------------

@@ -27,6 +27,11 @@ that changes on one turn are visible on later turns.
     status.
   - `issue_refund(invoice_id: str, amount: float)` — issues a refund against
     an invoice.
+- **Policy lookup** (shared by all three subagents):
+  - `lookup_policy(topic: str)` — returns the relevant support policy or FAQ
+    text (topics: `orders`, `refunds`, `customer_data`, `escalation`, `faq`),
+    sourced from the `kbs/support_swarm/` documents, so subagent actions stay
+    consistent with written policy.
 - **Human escalation** — ends the automated turn with a hand-off message.
 - **Stateful mock world** — order, customer, and invoice data is seeded
   lazily per conversation and mutated in-place, so cancellations and profile

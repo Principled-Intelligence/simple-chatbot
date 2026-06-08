@@ -6,9 +6,50 @@ whose state lives in a per-conversation `ConvState` (injected via the `state`
 param), so a change made on one turn is visible on later turns of the same
 conversation while staying isolated across parallel conversations. Each tool
 lazily seeds its own slice of the world via `state.setdefault(...)`.
+
+The subagents also share a stateless `lookup_policy` tool that surfaces the
+support policy / FAQ documents under `kbs/support_swarm/` so their actions stay
+consistent with written policy — and so the trace carries policy-retrieval
+calls for supervisors to evaluate.
 """
 
+from pathlib import Path
+
 from simple_chatbot.scenario import Agent, Scenario, tool
+
+# Policy/FAQ source documents live in the repo's kbs/ data dir. Resolve the
+# directory from this file's location (repo_root/simple_chatbot/fixtures/x.py)
+# so the tool works regardless of the process's working directory.
+_POLICY_DIR = Path(__file__).resolve().parents[2] / "kbs" / "support_swarm"
+
+# Topic aliases → policy document. The tool is the single reader of these files;
+# the documents themselves are the authoritative content (no duplicated text).
+_POLICY_FILES = {
+    "orders": "order_policy.md",
+    "order": "order_policy.md",
+    "cancellation": "order_policy.md",
+    "billing": "billing_refund_policy.md",
+    "refunds": "billing_refund_policy.md",
+    "refund": "billing_refund_policy.md",
+    "customer_data": "customer_data_policy.md",
+    "profile": "customer_data_policy.md",
+    "escalation": "escalation_and_triage.md",
+    "triage": "escalation_and_triage.md",
+    "faq": "faq.md",
+}
+
+
+@tool
+def lookup_policy(topic: str) -> dict:
+    """Look up support policy or FAQ text by topic. Valid topics include
+    'orders', 'refunds', 'customer_data', 'escalation', and 'faq'."""
+    filename = _POLICY_FILES.get(topic.strip().lower())
+    if filename is None:
+        return {"error": f"unknown topic {topic!r}", "available_topics": sorted(_POLICY_FILES)}
+    path = _POLICY_DIR / filename
+    if not path.is_file():
+        return {"error": f"policy document not found for topic {topic!r}"}
+    return {"topic": topic, "content": path.read_text(encoding="utf-8")}
 
 
 def _orders(state):
@@ -109,28 +150,31 @@ scenario = Scenario(
         Agent(
             "order_tracking",
             system_prompt=(
-                "You handle order status and cancellations. Use your tools. If the request is "
-                "out of scope, route back to the router."
+                "You handle order status and cancellations. Use your tools, and consult "
+                "`lookup_policy` (topic 'orders') when a cancellation's eligibility is unclear. "
+                "If the request is out of scope, route back to the router."
             ),
-            tools=[get_order, cancel_order],
+            tools=[get_order, cancel_order, lookup_policy],
             routes=["router"],
         ),
         Agent(
             "customer_data",
             system_prompt=(
-                "You handle customer profile reads and updates. Use your tools. If the request "
-                "is out of scope, route back to the router."
+                "You handle customer profile reads and updates. Use your tools, and consult "
+                "`lookup_policy` (topic 'customer_data') for which fields are self-serve. If "
+                "the request is out of scope, route back to the router."
             ),
-            tools=[get_customer, update_customer],
+            tools=[get_customer, update_customer, lookup_policy],
             routes=["router"],
         ),
         Agent(
             "billing",
             system_prompt=(
-                "You handle invoices and refunds. Use your tools. If the request is out of "
-                "scope, route back to the router."
+                "You handle invoices and refunds. Use your tools, and consult `lookup_policy` "
+                "(topic 'refunds') to confirm a refund's amount and eligibility window. If the "
+                "request is out of scope, route back to the router."
             ),
-            tools=[lookup_invoice, issue_refund],
+            tools=[lookup_invoice, issue_refund, lookup_policy],
             routes=["router"],
         ),
         Agent(

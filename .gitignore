@@ -212,4 +212,7 @@ __marimo__/
 conversations/
 .chroma/
 
-kbs/
+kbs/*
+# Track the support-swarm fixture's policy docs (tests depend on them); the
+# rest of kbs/ (e.g. knowledge_base/) stays ignored.
+!kbs/support_swarm/
