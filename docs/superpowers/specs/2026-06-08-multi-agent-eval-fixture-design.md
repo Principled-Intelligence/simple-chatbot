@@ -45,8 +45,8 @@ conversations.
 - A fixture modeling a router + 3 specialized subagents + human escalation,
   running in `live` mode so the LLM genuinely drives routing and tool use.
 - Parallel-safe: concurrent conversations never share state.
-- Deterministic exercise path preserved (so the plumbing is testable without an
-  LLM, and golden-trace style tests still work).
+- State semantics remain testable without an LLM (the mock tools are plain
+  functions, unit-testable directly against a `ConvState`).
 
 ## Non-goals (YAGNI)
 
@@ -142,24 +142,35 @@ Agents:
 Details:
 
 - Every subagent can `route("router")` (route-back topology).
-- Each subagent gets a short deterministic `script` exercising its stateful
-  tools, so deterministic tests run without an LLM; `live` mode ignores scripts
-  and lets the model drive.
+- Live-only: agents carry no authored `script` (the fixture is exercised
+  through `live` mode, where scripts are ignored anyway). State semantics are
+  covered by direct tool unit tests and a fake-`acompletion` live test instead.
 - Tools lazily seed their slice of the world via `state.setdefault(...)` (one
   known order, one customer, one invoice), so a fresh conversation starts from a
   believable state.
 
 ### 6. Tests — `tests/test_support_swarm.py` (unittest, matching existing style)
 
-- **Deterministic path:** router → order_tracking; `cancel_order` then
-  `get_order` reflects `cancelled` (state persists within a turn).
-- **Cross-turn persistence:** two `orchestrator.chat` calls sharing one
-  `ConvState`; a turn-1 mutation is visible in turn 2.
+State semantics (no LLM, no orchestrator — call the tool functions directly):
+
+- **Mutation:** `cancel_order` then `get_order` against one `ConvState` reflects
+  `cancelled`.
+- **Cross-turn persistence:** a mutation written to a `ConvState` is visible to a
+  later call using the same `ConvState`.
 - **Isolation:** two distinct `ConvState`s do not interfere.
-- **Route-back:** order_tracking → router → billing is reachable.
-- **Live:** a fake `acompletion` (as in existing provider tests) drives one
-  handoff plus one stateful tool call.
-- **Store:** `ConversationStateStore` lazy creation + LRU cap eviction.
+- **Seeding:** a fresh `ConvState` yields the seeded order/customer/invoice.
+
+Live path (fake `acompletion`, as in existing provider tests):
+
+- **Handoff + injection:** the router routes to a subagent, whose stateful tool
+  call reads/writes the turn's `ConvState` and the trace reflects it.
+- **Route-back:** subagent → router → a different subagent is reachable across
+  scripted fake-LLM rounds.
+
+Store:
+
+- **`ConversationStateStore`:** lazy `get_or_create` returns the same instance
+  per id; LRU cap evicts the oldest beyond the cap.
 
 ## Data flow
 
