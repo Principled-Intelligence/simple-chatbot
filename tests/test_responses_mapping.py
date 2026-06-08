@@ -273,6 +273,75 @@ class BuildOutputItemsTests(unittest.TestCase):
         self.assertEqual(items[-1]["content"][0]["text"], "forced final")
 
 
+class BuildOutputItemsIntermediateMessageTests(unittest.TestCase):
+    def test_intermediate_assistant_text_emits_message_before_its_tool_calls(self):
+        # An assistant turn that says something to the user AND calls a tool
+        # should surface that text as its own (non-terminal) message item,
+        # positioned before the function_call, in addition to the final message.
+        tool_messages = [
+            {
+                "role": "assistant",
+                "content": "Let me look that up for you.",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "name": "search_documents", "content": "R1"},
+        ]
+        items = build_output_items(_chat_result("Here is the answer.", tool_messages))
+        types = [it["type"] for it in items]
+        self.assertEqual(types, ["message", "function_call", "function_call_output", "message"])
+        self.assertEqual(items[0]["content"][0]["text"], "Let me look that up for you.")
+        self.assertEqual(items[0]["role"], "assistant")
+        self.assertEqual(items[-1]["content"][0]["text"], "Here is the answer.")
+
+    def test_intermediate_message_after_reasoning_before_tool_calls(self):
+        # Ordering within one assistant turn: reasoning, then the user-facing
+        # text, then the function_call it accompanies.
+        tool_messages = [
+            {
+                "role": "assistant",
+                "reasoning_content": "I should route this to billing.",
+                "content": "I'll connect you to our billing team.",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "route", "arguments": '{"agent": "billing"}'}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "name": "route", "content": '{"routed": true}'},
+        ]
+        items = build_output_items(_chat_result("done", tool_messages))
+        types = [it["type"] for it in items]
+        self.assertEqual(types, ["reasoning", "message", "function_call", "function_call_output", "message"])
+        self.assertEqual(items[1]["content"][0]["text"], "I'll connect you to our billing team.")
+
+    def test_empty_assistant_content_with_tool_calls_emits_no_intermediate_message(self):
+        # Regression guard: empty/None content must NOT produce a message item.
+        tool_messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "name": "search_documents", "content": "R1"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "c2", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c2", "name": "search_documents", "content": "R2"},
+        ]
+        items = build_output_items(_chat_result("final", tool_messages))
+        types = [it["type"] for it in items]
+        self.assertEqual(
+            types,
+            ["function_call", "function_call_output", "function_call", "function_call_output", "message"],
+        )
+
+
 from simple_chatbot.responses import build_response
 
 

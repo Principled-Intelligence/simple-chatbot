@@ -69,6 +69,69 @@ class OrchestratorRoutingTests(unittest.TestCase):
         self.assertEqual(names, {"lookup_invoice", "route"})
 
 
+class _ScriptedDecisionProvider:
+    """Returns a pre-built list of ProviderDecisions, one per round."""
+
+    def __init__(self, decisions):
+        self._decisions = list(decisions)
+        self._i = 0
+
+    async def decide(self, agent, messages, tool_messages):
+        d = self._decisions[self._i]
+        self._i += 1
+        return d
+
+
+class OrchestratorIntermediateTextTests(unittest.TestCase):
+    def _scenario(self):
+        front = Agent("front", routes=["billing"])
+        billing = Agent("billing", tools=[lookup_invoice])
+        return Scenario(id="s", entry="front", agents=[front, billing])
+
+    def test_intermediate_text_alongside_route_stored_on_assistant_message(self):
+        from simple_chatbot.scenario_provider import PlannedCall, ProviderDecision
+
+        provider = _ScriptedDecisionProvider(
+            [
+                ProviderDecision(
+                    text="I'll connect you to billing.",
+                    calls=[PlannedCall("route", json.dumps({"agent": "billing"}))],
+                ),
+                ProviderDecision(final="How can I help with billing?"),
+            ]
+        )
+        orch = ScenarioOrchestrator(self._scenario(), provider)
+        result = asyncio.run(orch.chat([{"role": "user", "content": "hi"}]))
+
+        # Terminal answer is the final text.
+        self.assertEqual(result.content, "How can I help with billing?")
+        # The routing assistant turn carries the non-terminal user-facing text.
+        route_assistant = next(
+            m for m in result.tool_messages
+            if m["role"] == "assistant" and m.get("tool_calls")
+        )
+        self.assertEqual(route_assistant["content"], "I'll connect you to billing.")
+
+    def test_no_intermediate_text_keeps_content_none(self):
+        from simple_chatbot.scenario_provider import PlannedCall, ProviderDecision
+
+        provider = _ScriptedDecisionProvider(
+            [
+                ProviderDecision(
+                    calls=[PlannedCall("route", json.dumps({"agent": "billing"}))],
+                ),
+                ProviderDecision(final="done"),
+            ]
+        )
+        orch = ScenarioOrchestrator(self._scenario(), provider)
+        result = asyncio.run(orch.chat([{"role": "user", "content": "hi"}]))
+        route_assistant = next(
+            m for m in result.tool_messages
+            if m["role"] == "assistant" and m.get("tool_calls")
+        )
+        self.assertIsNone(route_assistant["content"])
+
+
 class OrchestratorTerminalTests(unittest.TestCase):
     def test_terminal_agent_emits_escalation_final(self):
         s = Scenario(

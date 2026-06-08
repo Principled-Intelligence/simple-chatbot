@@ -158,6 +158,32 @@ class LiveProviderTests(unittest.TestCase):
         self.assertEqual(d.calls[0].name, "lookup_invoice")
         self.assertEqual(json.loads(d.calls[0].arguments), {"invoice_id": "INV-9"})
 
+    def test_tool_call_response_carries_intermediate_text(self):
+        # A model that speaks to the user AND calls a tool in the same turn:
+        # the text is carried as `text` on the decision (non-terminal), not as
+        # `final`, so the orchestrator can surface it before the handoff.
+        agent = Agent("billing", tools=[lookup_invoice], routes=["router"])
+        resp = _Response(
+            _Message(
+                content="I'll send you back to the front desk.",
+                tool_calls=[_ToolCall("route", '{"agent": "router"}')],
+            ),
+            "tool_calls",
+        )
+        d = asyncio.run(_live({}, resp).decide(agent, messages=[], tool_messages=[]))
+        self.assertIsNone(d.final)
+        self.assertEqual(d.text, "I'll send you back to the front desk.")
+        self.assertEqual(d.calls[0].name, "route")
+
+    def test_tool_call_response_without_text_has_no_text(self):
+        agent = Agent("billing", tools=[lookup_invoice])
+        resp = _Response(
+            _Message(tool_calls=[_ToolCall("lookup_invoice", "{}")]),
+            "tool_calls",
+        )
+        d = asyncio.run(_live({}, resp).decide(agent, messages=[], tool_messages=[]))
+        self.assertIsNone(d.text)
+
     def test_text_response_maps_to_final(self):
         agent = Agent("billing", tools=[lookup_invoice])
         resp = _Response(_Message(content="All done.", reasoning_content="because"), "stop")

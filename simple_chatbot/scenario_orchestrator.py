@@ -88,7 +88,14 @@ class ScenarioOrchestrator:
                         }
                     )
 
-                assistant_msg: dict = {"role": "assistant", "content": None, "tool_calls": tool_calls}
+                # Non-terminal text the agent emits alongside its tool calls
+                # (e.g. "I'll connect you to billing." before a route). The
+                # Responses adapter surfaces it as its own message item.
+                assistant_msg: dict = {
+                    "role": "assistant",
+                    "content": decision.text,
+                    "tool_calls": tool_calls,
+                }
                 if decision.reasoning:
                     assistant_msg["reasoning_content"] = decision.reasoning
                 tool_messages.append(assistant_msg)

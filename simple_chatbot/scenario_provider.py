@@ -51,12 +51,18 @@ class PlannedCall:
 
 @dataclass
 class ProviderDecision:
-    """Either `final` (end the turn) or one-or-more `calls`."""
+    """Either `final` (end the turn) or one-or-more `calls`.
+
+    `text` is non-terminal user-facing text emitted ALONGSIDE `calls` (the agent
+    says something, then hands off / calls a tool without ending its turn). It is
+    distinct from `final`, which ends the turn.
+    """
 
     final: str | None = None
     calls: list[PlannedCall] = field(default_factory=list)
     reasoning: str | None = None
     ignore_retrieval: bool = False
+    text: str | None = None
 
 
 class DeterministicProvider:
@@ -176,5 +182,9 @@ class LiveProvider:
                         arguments=getattr(fn, "arguments", "{}"),
                     )
                 )
-            return ProviderDecision(calls=calls, reasoning=reasoning)
+            # The model may speak to the user AND call a tool in the same turn.
+            # Carry that text as non-terminal `text` (empty/None -> no text).
+            return ProviderDecision(
+                calls=calls, reasoning=reasoning, text=(msg.content or None)
+            )
         return ProviderDecision(final=(msg.content or ""), reasoning=reasoning)
