@@ -38,6 +38,25 @@ class ToolDecoratorTests(unittest.TestCase):
 
         self.assertEqual(echo.func(value="hi"), {"echoed": "hi"})
 
+    def test_state_param_excluded_from_schema_and_flagged(self):
+        @tool
+        def get_order(order_id: str, state) -> dict:
+            """Look up an order."""
+            return {"order_id": order_id}
+
+        self.assertTrue(get_order.wants_state)
+        self.assertNotIn("state", get_order.parameters["properties"])
+        self.assertEqual(get_order.parameters["required"], ["order_id"])
+
+    def test_tool_without_state_is_not_flagged(self):
+        @tool
+        def ping(message: str) -> dict:
+            """Echo."""
+            return {"message": message}
+
+        self.assertFalse(ping.wants_state)
+        self.assertIn("message", ping.parameters["properties"])
+
 
 class StepTypeTests(unittest.TestCase):
     def _t(self):

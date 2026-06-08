@@ -26,6 +26,7 @@ class ScenarioTool:
     description: str
     parameters: dict
     func: Callable[..., dict | str]
+    wants_state: bool = False
 
 
 def tool(func: Callable[..., dict | str]) -> ScenarioTool:
@@ -37,8 +38,14 @@ def tool(func: Callable[..., dict | str]) -> ScenarioTool:
     """
     sig = inspect.signature(func)
     fields: dict = {}
+    wants_state = False
     for pname, p in sig.parameters.items():
         if pname == "self":
+            continue
+        if pname == "state":
+            # Injected at execution from the conversation's ConvState; never
+            # part of the advertised JSON schema.
+            wants_state = True
             continue
         annotation = p.annotation if p.annotation is not inspect.Parameter.empty else str
         default = ... if p.default is inspect.Parameter.empty else p.default
@@ -60,6 +67,7 @@ def tool(func: Callable[..., dict | str]) -> ScenarioTool:
         description=(func.__doc__ or "").strip(),
         parameters=parameters,
         func=func,
+        wants_state=wants_state,
     )
 
 
