@@ -211,3 +211,5 @@ __marimo__/
 # simple-chatbot runtime artefacts
 conversations/
 .chroma/
+
+kbs/
