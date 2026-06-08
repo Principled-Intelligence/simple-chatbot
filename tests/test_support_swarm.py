@@ -151,6 +151,52 @@ class LiveSwarmTests(unittest.TestCase):
         names = [m["name"] for m in result.tool_messages if m["role"] == "tool"]
         self.assertEqual(names, ["route", "route", "route", "lookup_invoice"])
 
+    def test_customer_data_handoff_and_update(self):
+        responses = [
+            _call("route", {"agent": "customer_data"}),
+            _call("update_customer", {"field": "email", "value": "grace@example.com"}),
+            _final("Updated your email to grace@example.com."),
+        ]
+        state = ConvState()
+        result = asyncio.run(
+            self._orch(responses).chat(
+                [{"role": "user", "content": "change my email"}], state=state
+            )
+        )
+        self.assertEqual(result.active_agent, "customer_data")
+        self.assertEqual(state["customer"]["email"], "grace@example.com")
+        names = [m["name"] for m in result.tool_messages if m["role"] == "tool"]
+        self.assertEqual(names, ["route", "update_customer"])
+
+    def test_route_to_human_escalates(self):
+        responses = [
+            _call("route", {"agent": "human"}),
+        ]
+        result = asyncio.run(
+            self._orch(responses).chat(
+                [{"role": "user", "content": "I want to speak to a person"}], state=ConvState()
+            )
+        )
+        self.assertEqual(result.active_agent, "human")
+        self.assertEqual(result.content, "Escalating to a human agent.")
+
+    def test_invalid_live_route_surfaces_tool_error(self):
+        responses = [
+            _call("route", {"agent": "nonexistent"}),
+            _final("Let me help directly."),
+        ]
+        result = asyncio.run(
+            self._orch(responses).chat(
+                [{"role": "user", "content": "do something"}], state=ConvState()
+            )
+        )
+        # Invalid route is surfaced as a tool error; the active agent does not switch.
+        self.assertEqual(result.active_agent, "router")
+        route_out = next(
+            m for m in result.tool_messages if m["role"] == "tool" and m["name"] == "route"
+        )
+        self.assertIn("cannot route to", route_out["content"])
+
 
 # --- Server integration: state persists across chained turns -----------------
 

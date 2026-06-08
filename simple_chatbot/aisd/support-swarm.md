@@ -32,7 +32,11 @@ that changes on one turn are visible on later turns.
   lazily per conversation and mutated in-place, so cancellations and profile
   changes persist across turns.
 - **Multi-turn conversation** — state and active-agent context are preserved
-  across chained requests.
+  across chained requests. Per-conversation state isolation relies on a stable
+  conversation identity: clients should pass a consistent `user` field (or
+  `x-conversation-id` header), otherwise the conversation id is derived from
+  the first user message and two conversations that open identically would
+  share state.
 
 ## Out of scope
 
