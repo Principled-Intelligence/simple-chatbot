@@ -203,6 +203,22 @@ class LiveSwarmTests(unittest.TestCase):
         self.assertEqual(result.active_agent, "human")
         self.assertEqual(result.content, "Escalating to a human agent.")
 
+    def test_resuming_after_escalation_returns_closed_message(self):
+        from simple_chatbot.scenario_orchestrator import ESCALATED_CLOSED_MESSAGE
+
+        # A later turn that resumes the already-escalated conversation: the chat
+        # is closed, so we don't replay "Escalating to a human agent."
+        result = asyncio.run(
+            self._orch([]).chat(
+                [{"role": "user", "content": "are you there?"}],
+                start_agent="human",
+                state=ConvState(),
+            )
+        )
+        self.assertEqual(result.active_agent, "human")
+        self.assertEqual(result.content, ESCALATED_CLOSED_MESSAGE)
+        self.assertEqual(result.tool_messages, [])
+
     def test_invalid_live_route_surfaces_tool_error(self):
         responses = [
             _call("route", {"agent": "nonexistent"}),

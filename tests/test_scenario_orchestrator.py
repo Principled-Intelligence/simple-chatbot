@@ -6,7 +6,7 @@ import unittest
 from simple_chatbot.conversation_state import ConvState
 from simple_chatbot.scenario import Agent, Call, Final, MalformedCall, Route, Scenario, UnknownToolCall, tool
 from simple_chatbot.scenario_provider import DeterministicProvider
-from simple_chatbot.scenario_orchestrator import ScenarioOrchestrator
+from simple_chatbot.scenario_orchestrator import ESCALATED_CLOSED_MESSAGE, ScenarioOrchestrator
 
 
 @tool
@@ -165,11 +165,14 @@ class OrchestratorResumeTests(unittest.TestCase):
         )
         self.assertEqual(first_call, "route")  # entry dispatcher ran
 
-    def test_resume_into_terminal_reemits_escalation(self):
+    def test_resume_into_terminal_returns_closed_message(self):
+        # A prior turn escalated to human; resuming the conversation must NOT
+        # replay the escalation — it returns the closed/start-a-new-chat message.
         result = self._run(
             self._scenario(), [{"role": "user", "content": "x"}], start_agent="human"
         )
-        self.assertEqual(result.content, "Escalating to a human.")
+        self.assertEqual(result.content, ESCALATED_CLOSED_MESSAGE)
+        self.assertNotEqual(result.content, "Escalating to a human.")
         self.assertEqual(result.tool_messages, [])  # no rounds executed
         self.assertEqual(result.active_agent, "human")
 

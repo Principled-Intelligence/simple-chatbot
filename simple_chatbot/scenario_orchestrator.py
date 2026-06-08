@@ -21,6 +21,16 @@ from simple_chatbot.scenario_catalog import build_responses_tools
 from simple_chatbot.scenario_provider import DeterministicProvider, ProviderDecision
 from simple_chatbot.tools import _parse_args
 
+# Returned when a turn resumes a conversation that a PRIOR turn already escalated
+# to a (terminal) human agent. The escalation itself is announced once, on the
+# turn it happens; afterwards the conversation is closed and the assistant is no
+# longer reachable, so we say so rather than replaying the escalation line.
+ESCALATED_CLOSED_MESSAGE = (
+    "This conversation has been escalated to a human agent and is now closed. "
+    "The assistant is no longer available here — please start a new chat to "
+    "continue, and a human will follow up on your request."
+)
+
 
 class ScenarioOrchestrator:
     def __init__(
@@ -48,9 +58,14 @@ class ScenarioOrchestrator:
         seq = 0
 
         if active.terminal:
-            # Resuming directly into a terminal agent re-emits its escalation
-            # and ends the turn (no rounds run).
-            content = active.escalation_message or "(escalated)"
+            if start_agent is not None and active.name == start_agent:
+                # A prior turn already escalated this conversation; it is closed.
+                # Don't replay the escalation — tell the user to start a new chat.
+                content = ESCALATED_CLOSED_MESSAGE
+            else:
+                # Entering a terminal agent at turn start without resuming it
+                # (e.g. entry is terminal): announce the escalation once.
+                content = active.escalation_message or "(escalated)"
         else:
             for _round in range(self.max_rounds):
                 decision: ProviderDecision = await self.provider.decide(
