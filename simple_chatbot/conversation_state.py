@@ -24,7 +24,7 @@ class ConversationStateStore:
 
     def __init__(self, max_conversations: int = 512) -> None:
         self._lock = asyncio.Lock()
-        self._states: "OrderedDict[str, ConvState]" = OrderedDict()
+        self._states: OrderedDict[str, ConvState] = OrderedDict()
         self._max = max_conversations
 
     async def get_or_create(self, conversation_id: str) -> ConvState:
@@ -32,8 +32,9 @@ class ConversationStateStore:
             state = self._states.get(conversation_id)
             if state is None:
                 state = ConvState()
-                self._states[conversation_id] = state
-            self._states.move_to_end(conversation_id)
+                self._states[conversation_id] = state  # appended as most-recent
+            else:
+                self._states.move_to_end(conversation_id)  # promote on access
             while len(self._states) > self._max:
                 self._states.popitem(last=False)
             return state
