@@ -25,3 +25,17 @@ class SamplingKwargsTests(unittest.TestCase):
         with TemporaryDirectory() as tmp:
             config = SimpleChatbotConfig(docs_dir=Path(tmp) / "docs")
             self.assertEqual(sampling_kwargs(config), {})
+
+    def test_reasoning_effort_forwarded_when_set(self):
+        with TemporaryDirectory() as tmp:
+            config = SimpleChatbotConfig(
+                docs_dir=Path(tmp) / "docs", reasoning_effort="medium"
+            )
+            self.assertEqual(sampling_kwargs(config), {"reasoning_effort": "medium"})
+
+    def test_reasoning_effort_normalized_to_lowercase(self):
+        with TemporaryDirectory() as tmp:
+            config = SimpleChatbotConfig(
+                docs_dir=Path(tmp) / "docs", reasoning_effort="high"
+            )
+            self.assertEqual(config.reasoning_effort, "high")

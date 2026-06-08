@@ -16,25 +16,25 @@ This repo is intentionally small: it is meant to help developers get a useful
 RAG chatbot running quickly, understand the moving parts, and customize the
 models or retrieval settings without adopting a production platform.
 
-| Good for | Not meant for |
-| --- | --- |
-| Local document Q&A prototypes | Production auth, billing, or tenant isolation |
-| Testing OpenAI-compatible chat clients | Streaming chat completions |
-| Trying hosted or local LiteLLM model backends | Managed document ingestion pipelines |
-| Learning a compact agentic RAG flow | Large-scale observability or deployment automation |
+| Good for                                      | Not meant for                                      |
+| --------------------------------------------- | -------------------------------------------------- |
+| Local document Q&A prototypes                 | Production auth, billing, or tenant isolation      |
+| Testing OpenAI-compatible chat clients        | Streaming chat completions                         |
+| Trying hosted or local LiteLLM model backends | Managed document ingestion pipelines               |
+| Learning a compact agentic RAG flow           | Large-scale observability or deployment automation |
 
 ## At a Glance
 
-| Item | Default |
-| --- | --- |
-| Python | `>=3.12` |
-| Server URL | `http://127.0.0.1:8000` |
-| API routes | `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, `GET /v1/responses/{id}` |
-| Chat model | `openai/gpt-5.4-nano` |
-| Embedding model | `openai/text-embedding-3-small` |
-| Documents | `.txt`, `.md`, `.pdf`, `.docx` |
-| Vector store | `./.chroma` |
-| Conversation logs | `./conversations` |
+| Item              | Default                                                                                       |
+| ----------------- | --------------------------------------------------------------------------------------------- |
+| Python            | `>=3.12`                                                                                      |
+| Server URL        | `http://127.0.0.1:8000`                                                                       |
+| API routes        | `GET /v1/models`, `POST /v1/chat/completions`, `POST /v1/responses`, `GET /v1/responses/{id}` |
+| Chat model        | `openai/gpt-5.4-nano`                                                                         |
+| Embedding model   | `openai/text-embedding-3-small`                                                               |
+| Documents         | `.txt`, `.md`, `.pdf`, `.docx`                                                                |
+| Vector store      | `./.chroma`                                                                                   |
+| Conversation logs | `./conversations`                                                                             |
 
 Streaming is not implemented yet. Requests with `stream=true` return HTTP 400.
 
@@ -140,16 +140,17 @@ The app does not load `.env` automatically.
 Use the defaults first. Then reach for these flags when you need a specific
 behavior:
 
-| Task | Command |
-| --- | --- |
-| Rebuild the vector index | `uv run simple-chatbot serve --docs-dir ./docs --reindex` |
-| Use a custom system prompt | `uv run simple-chatbot serve --docs-dir ./docs --system-prompt "Answer only from the indexed docs."` |
-| Load a prompt from disk | `uv run simple-chatbot serve --docs-dir ./docs --system-prompt @./prompt.txt` |
-| Change chunking | `uv run simple-chatbot serve --docs-dir ./docs --chunk-size 800 --chunk-overlap 100` |
-| Run on another port | `uv run simple-chatbot serve --docs-dir ./docs --port 15077` |
-| Require API auth | `uv run simple-chatbot serve --docs-dir ./docs --api-key "dev-secret"` |
-| Control sampling | `uv run simple-chatbot serve --docs-dir ./docs --temperature 0.2 --top-p 0.9` |
-| Run offline (no API keys) | `SIMPLE_CHATBOT_SCRIPTED_LLM=1 uv run simple-chatbot serve --docs-dir /tmp/empty` |
+| Task                                     | Command                                                                                                           |
+| ---------------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Rebuild the vector index                 | `uv run simple-chatbot serve --docs-dir ./docs --reindex`                                                         |
+| Use a custom system prompt               | `uv run simple-chatbot serve --docs-dir ./docs --system-prompt "Answer only from the indexed docs."`              |
+| Load a prompt from disk                  | `uv run simple-chatbot serve --docs-dir ./docs --system-prompt @./prompt.txt`                                     |
+| Change chunking                          | `uv run simple-chatbot serve --docs-dir ./docs --chunk-size 800 --chunk-overlap 100`                              |
+| Run on another port                      | `uv run simple-chatbot serve --docs-dir ./docs --port 15077`                                                      |
+| Require API auth                         | `uv run simple-chatbot serve --docs-dir ./docs --api-key "dev-secret"`                                            |
+| Control sampling                         | `uv run simple-chatbot serve --docs-dir ./docs --temperature 0.2 --top-p 0.9`                                     |
+| Enable model reasoning (Gemini 3+, etc.) | `uv run simple-chatbot serve --docs-dir ./docs --chat-model vertex_ai/gemini-3.5-flash --reasoning-effort medium` |
+| Run offline (no API keys)                | `SIMPLE_CHATBOT_SCRIPTED_LLM=1 uv run simple-chatbot serve --docs-dir /tmp/empty`                                 |
 
 By default, the API binds to `127.0.0.1` and does not require a key. If you bind
 to a network interface such as `--host 0.0.0.0`, set `--api-key` or
@@ -172,6 +173,27 @@ uv run simple-chatbot serve \
 
 Use `--chat-api-base` or `--embedding-api-base` when a backend exposes an
 OpenAI-compatible endpoint at a custom URL.
+
+### Reasoning / thinking models
+
+Pass `--reasoning-effort` (or `SIMPLE_CHATBOT_REASONING_EFFORT`) to forward
+LiteLLM's `reasoning_effort` parameter. On Gemini 3+ this sets `thinkingLevel`
+and `includeThoughts`, so thought text is returned as `reasoning_content` and
+surfaced on `/v1/responses` as `type: "reasoning"` output items (`chat.py`
+prints them in yellow).
+
+```bash
+uv run simple-chatbot serve \
+  --docs-dir ./docs \
+  --chat-model "vertex_ai/gemini-3.5-flash" \
+  --reasoning-effort medium
+```
+
+The agent does **not** feed full reasoning text back into later LLM turns inside
+the tool loop (standard for OpenAI/Gemini; saves tokens). Gemini 3+ multi-turn
+tool continuity is handled by LiteLLM via **thought signatures** embedded in
+tool-call IDs, which the agent preserves. Use `/v1/responses` or inspect
+`tool_messages` on `/v1/chat/completions` to see reasoning traces.
 
 <details>
 <summary>Use a local vLLM backend</summary>
@@ -306,11 +328,20 @@ Response (abbreviated):
   "object": "response",
   "status": "completed",
   "output": [
-    {"type": "function_call", "call_id": "call_1", "name": "search_documents", "arguments": "{\"query\": \"onboarding\"}"},
-    {"type": "function_call_output", "call_id": "call_1", "output": "..."},
-    {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "...", "annotations": []}]}
+    {
+      "type": "function_call",
+      "call_id": "call_1",
+      "name": "search_documents",
+      "arguments": "{\"query\": \"onboarding\"}"
+    },
+    { "type": "function_call_output", "call_id": "call_1", "output": "..." },
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [{ "type": "output_text", "text": "...", "annotations": [] }]
+    }
   ],
-  "usage": {"input_tokens": 123, "output_tokens": 45, "total_tokens": 168}
+  "usage": { "input_tokens": 123, "output_tokens": 45, "total_tokens": 168 }
 }
 ```
 
@@ -324,6 +355,7 @@ curl -X POST http://localhost:8000/v1/responses \
 ```
 
 **Notes:**
+
 - `tools` and `tool_choice` in the request are accepted but ignored — the
   server always exposes its built-in `search_documents` tool.
 - Streaming (`stream: true`) is not supported.
@@ -343,21 +375,21 @@ the server exposes four tools to the model and selects them heuristically from
 the user's input. Use this to produce varied trace shapes for downstream
 evaluator testing.
 
-| Tool                              | Triggered when the user input contains…           |
-| --------------------------------- | ------------------------------------------------- |
-| `search_documents` (default)      | Any input that doesn't match another tool         |
-| `calculate(expression)`           | `calculate`, `compute`, `math`, or `<digit>±<digit>` |
-| `get_current_time(tz?)`           | The word `time`; `tz` extracted from `in <name>`  |
-| `lookup_user(user_id)`            | `lookup` or `user_id`                              |
+| Tool                         | Triggered when the user input contains…              |
+| ---------------------------- | ---------------------------------------------------- |
+| `search_documents` (default) | Any input that doesn't match another tool            |
+| `calculate(expression)`      | `calculate`, `compute`, `math`, or `<digit>±<digit>` |
+| `get_current_time(tz?)`      | The word `time`; `tz` extracted from `in <name>`     |
+| `lookup_user(user_id)`       | `lookup` or `user_id`                                |
 
 Use explicit markers in the user input to force specific trace shapes:
 
-| Marker          | Effect on the next turn                                                       |
-| --------------- | ----------------------------------------------------------------------------- |
+| Marker          | Effect on the next turn                                                          |
+| --------------- | -------------------------------------------------------------------------------- |
 | `[parallel]`    | At least two tool calls in one assistant message → `[fc, fc, fco, fco, message]` |
-| `[reasoning]`   | Adds a `reasoning` output item before tool calls / the final message          |
-| `[multi-round]` | Two sequential tool rounds before answering → `[fc, fco, fc, fco, message]`   |
-| `[error]`       | First tool call has malformed JSON arguments → exercises the agent's error path |
+| `[reasoning]`   | Adds a `reasoning` output item before tool calls / the final message             |
+| `[multi-round]` | Two sequential tool rounds before answering → `[fc, fco, fc, fco, message]`      |
+| `[error]`       | First tool call has malformed JSON arguments → exercises the agent's error path  |
 
 **Exhaustive showcase mode:** Set `EXHAUSTIVE_TOOL_USE=1` alongside
 `SIMPLE_CHATBOT_SCRIPTED_LLM=1` to make every scripted user turn cycle through
@@ -366,13 +398,13 @@ shape over a typical conversation. By construction, the first user turn fires
 all four tools in parallel and subsequent turns rotate through multi-round,
 errored, parallel-pair, and plain-single shapes:
 
-| User turn (mod 5) | Shape          | Tools                                                          |
-|-------------------|----------------|----------------------------------------------------------------|
-| 0                 | All-parallel   | `search_documents`, `calculate`, `get_current_time`, `lookup_user` |
-| 1                 | Multi-round    | round 1 `search_documents`, round 2 `calculate`                |
-| 2                 | Errored call   | `lookup_user` with malformed JSON args                          |
-| 3                 | Parallel pair  | `calculate`, `get_current_time`                                |
-| 4                 | Plain single   | `search_documents`                                             |
+| User turn (mod 5) | Shape         | Tools                                                              |
+| ----------------- | ------------- | ------------------------------------------------------------------ |
+| 0                 | All-parallel  | `search_documents`, `calculate`, `get_current_time`, `lookup_user` |
+| 1                 | Multi-round   | round 1 `search_documents`, round 2 `calculate`                    |
+| 2                 | Errored call  | `lookup_user` with malformed JSON args                             |
+| 3                 | Parallel pair | `calculate`, `get_current_time`                                    |
+| 4                 | Plain single  | `search_documents`                                                 |
 
 Explicit bracketed markers (`[parallel]`, `[multi-round]`, `[error]`,
 `[reasoning]`) in the user's text still take precedence over the rotation, so
@@ -436,12 +468,12 @@ Indexer + ChromaDB
 Use `.env.example` as a template for local secrets and frequently used runtime
 values. Local `.env` files are ignored by git.
 
-| Variable | Used by | Purpose |
-| --- | --- | --- |
-| `OPENAI_API_KEY` | LiteLLM | Provider API key for OpenAI-backed chat and embedding models |
-| `ORBITALS_API_KEY` | ScopeGuard | Hosted ScopeGuard API key when `--guard-api-url` is not set |
+| Variable                 | Used by        | Purpose                                                                 |
+| ------------------------ | -------------- | ----------------------------------------------------------------------- |
+| `OPENAI_API_KEY`         | LiteLLM        | Provider API key for OpenAI-backed chat and embedding models            |
+| `ORBITALS_API_KEY`       | ScopeGuard     | Hosted ScopeGuard API key when `--guard-api-url` is not set             |
 | `SIMPLE_CHATBOT_API_KEY` | simple-chatbot | API key required by `/v1/chat/completions` when `--api-key` is not used |
-| `BASE_URL` | smoke test | Target server URL for `./smoke_test.sh` |
+| `BASE_URL`               | smoke test     | Target server URL for `./smoke_test.sh`                                 |
 
 </details>
 
@@ -452,42 +484,43 @@ values. Local `.env` files are ignored by git.
 simple-chatbot serve --docs-dir PATH [OPTIONS]
 ```
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `--docs-dir` | required | Directory of documents to index recursively |
-| `--chat-model` | `openai/gpt-5.4-nano` | LiteLLM chat model string |
-| `--embedding-model` | `openai/text-embedding-3-small` | LiteLLM embedding model string |
-| `--chat-api-base` | `None` | Override API base for the chat model |
-| `--embedding-api-base` | `None` | Override API base for the embedding model |
-| `--chunk-size` | `500` | Characters per chunk; must be greater than `0` |
-| `--chunk-overlap` | `50` | Overlap between chunks; must satisfy `0 <= overlap < chunk_size` |
-| `--top-k` | `5` | Chunks returned per search |
-| `--chroma-persist-dir` | `./.chroma` | Where ChromaDB stores vectors |
-| `--collection-name` | `simple_chatbot` | ChromaDB collection name |
-| `--host` | `127.0.0.1` | Server bind address |
-| `--port` | `8000` | Server port |
-| `--api-key` | `None` | Require this key on `/v1/chat/completions`; falls back to `SIMPLE_CHATBOT_API_KEY` |
-| `--max-tool-rounds` | `5` | Max agentic loop iterations per request |
-| `--system-prompt` | `None` | System prompt text, or `@/path/to/file.txt` to load from disk |
-| `--conversation-log-dir` | `./conversations` | Directory for conversation JSONL logs |
-| `--temperature` | `None` | Sampling temperature (0–2); omit to use the model default |
-| `--top-p` | `None` | Nucleus sampling top-p; omit to use the model default |
-| `--gen-top-k` | `None` | Top-k sampling for generation; omit to use the model default |
-| `--min-p` | `None` | Min-p sampling threshold; omit to use the model default |
-| `--presence-penalty` | `None` | Presence penalty (−2 to 2); omit to use the model default |
-| `--frequency-penalty` | `None` | Frequency penalty (−2 to 2); omit to use the model default |
-| `--repetition-penalty` | `None` | Repetition penalty (>0); omit to use the model default |
-| `--reindex` | off | Clear the collection and rebuild it from current documents |
-| `--log-level` | `INFO` | `TRACE`, `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
-| `--log-format` | `pretty` | Operational log format: `pretty` or `json` |
-| `--enable-guard` | off | Enable ScopeGuard before the LLM |
-| `--guard-backend` | `api` | `api`, `vllm`, or `huggingface` |
-| `--guard-model` | `None` | Required for `vllm` or `huggingface` |
-| `--guard-api-url` | `None` | Self-hosted ScopeGuard HTTP API base URL |
-| `--guard-api-key` | `None` | ScopeGuard API key; falls back to `ORBITALS_API_KEY` only when `--guard-api-url` is unset |
-| `--guard-service-description` | `None` | Scope policy text, or `@/path/to/file.txt`; else uses `--system-prompt` |
-| `--guard-block-classes` | `Out of Scope,Restricted` | Comma-separated classes that trigger refusal |
-| `--guard-refusal-message` | `I'm sorry, I can't help with that request.` | Assistant reply when a blocked class is detected |
+| Option                        | Default                                      | Description                                                                                                                                    |
+| ----------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--docs-dir`                  | required                                     | Directory of documents to index recursively                                                                                                    |
+| `--chat-model`                | `openai/gpt-5.4-nano`                        | LiteLLM chat model string                                                                                                                      |
+| `--embedding-model`           | `openai/text-embedding-3-small`              | LiteLLM embedding model string                                                                                                                 |
+| `--chat-api-base`             | `None`                                       | Override API base for the chat model                                                                                                           |
+| `--embedding-api-base`        | `None`                                       | Override API base for the embedding model                                                                                                      |
+| `--chunk-size`                | `500`                                        | Characters per chunk; must be greater than `0`                                                                                                 |
+| `--chunk-overlap`             | `50`                                         | Overlap between chunks; must satisfy `0 <= overlap < chunk_size`                                                                               |
+| `--top-k`                     | `5`                                          | Chunks returned per search                                                                                                                     |
+| `--chroma-persist-dir`        | `./.chroma`                                  | Where ChromaDB stores vectors                                                                                                                  |
+| `--collection-name`           | `simple_chatbot`                             | ChromaDB collection name                                                                                                                       |
+| `--host`                      | `127.0.0.1`                                  | Server bind address                                                                                                                            |
+| `--port`                      | `8000`                                       | Server port                                                                                                                                    |
+| `--api-key`                   | `None`                                       | Require this key on `/v1/chat/completions`; falls back to `SIMPLE_CHATBOT_API_KEY`                                                             |
+| `--max-tool-rounds`           | `5`                                          | Max agentic loop iterations per request                                                                                                        |
+| `--system-prompt`             | `None`                                       | System prompt text, or `@/path/to/file.txt` to load from disk                                                                                  |
+| `--conversation-log-dir`      | `./conversations`                            | Directory for conversation JSONL logs                                                                                                          |
+| `--temperature`               | `None`                                       | Sampling temperature (0–2); omit to use the model default                                                                                      |
+| `--top-p`                     | `None`                                       | Nucleus sampling top-p; omit to use the model default                                                                                          |
+| `--gen-top-k`                 | `None`                                       | Top-k sampling for generation; omit to use the model default                                                                                   |
+| `--min-p`                     | `None`                                       | Min-p sampling threshold; omit to use the model default                                                                                        |
+| `--presence-penalty`          | `None`                                       | Presence penalty (−2 to 2); omit to use the model default                                                                                      |
+| `--frequency-penalty`         | `None`                                       | Frequency penalty (−2 to 2); omit to use the model default                                                                                     |
+| `--repetition-penalty`        | `None`                                       | Repetition penalty (>0); omit to use the model default                                                                                         |
+| `--reasoning-effort`          | `None`                                       | Enable reasoning/thinking via LiteLLM (`minimal`, `low`, `medium`, `high`, `disable`, `none`); falls back to `SIMPLE_CHATBOT_REASONING_EFFORT` |
+| `--reindex`                   | off                                          | Clear the collection and rebuild it from current documents                                                                                     |
+| `--log-level`                 | `INFO`                                       | `TRACE`, `DEBUG`, `INFO`, `WARNING`, or `ERROR`                                                                                                |
+| `--log-format`                | `pretty`                                     | Operational log format: `pretty` or `json`                                                                                                     |
+| `--enable-guard`              | off                                          | Enable ScopeGuard before the LLM                                                                                                               |
+| `--guard-backend`             | `api`                                        | `api`, `vllm`, or `huggingface`                                                                                                                |
+| `--guard-model`               | `None`                                       | Required for `vllm` or `huggingface`                                                                                                           |
+| `--guard-api-url`             | `None`                                       | Self-hosted ScopeGuard HTTP API base URL                                                                                                       |
+| `--guard-api-key`             | `None`                                       | ScopeGuard API key; falls back to `ORBITALS_API_KEY` only when `--guard-api-url` is unset                                                      |
+| `--guard-service-description` | `None`                                       | Scope policy text, or `@/path/to/file.txt`; else uses `--system-prompt`                                                                        |
+| `--guard-block-classes`       | `Out of Scope,Restricted`                    | Comma-separated classes that trigger refusal                                                                                                   |
+| `--guard-refusal-message`     | `I'm sorry, I can't help with that request.` | Assistant reply when a blocked class is detected                                                                                               |
 
 </details>
 

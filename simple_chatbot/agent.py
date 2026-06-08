@@ -30,12 +30,18 @@ FINAL_ANSWER_INSTRUCTION = (
     "in the conversation, write your final answer now in plain text. Do not request any more tools."
 )
 
+
 def _sanitize_assistant_dump(dump: dict) -> dict:
     """Reduce a LiteLLM `Message.model_dump()` to the keys that are safe to
     feed back to providers on the next turn. Some providers reject extra or
     provider-specific keys (e.g. `reasoning_content`, `provider_specific_fields`,
     `audio`, `thinking_blocks`). Keep only role, content, tool_calls (themselves
     trimmed to `id`/`type`/`function:{name,arguments}`), and `name` if present.
+
+    Full reasoning text is intentionally omitted from working messages: providers
+    differ (OpenAI/Gemini hide it; Anthropic can round-trip `thinking_blocks`).
+    Gemini 3+ multi-turn tool continuity is preserved via thought signatures
+    embedded in tool-call `id` values by LiteLLM, which this sanitizer keeps.
     """
     sanitized: dict = {
         "role": dump.get("role", "assistant"),
@@ -61,10 +67,11 @@ def _sanitize_assistant_dump(dump: dict) -> dict:
 
 
 def sampling_kwargs(config: SimpleChatbotConfig) -> dict:
-    """Return only the sampling params the user set explicitly (skip None).
+    """Return litellm completion kwargs the user set explicitly (skip None).
 
     Shared by the single-agent `Agent` and the scenario `LiveProvider` so both
-    forward identical wire kwargs to litellm.
+    forward identical wire kwargs to litellm. Includes sampling params and
+    `reasoning_effort` when configured.
     """
     # attr name on SimpleChatbotConfig  ->  key litellm/OpenAI expects on the wire
     field_map = {
@@ -75,6 +82,7 @@ def sampling_kwargs(config: SimpleChatbotConfig) -> dict:
         "presence_penalty": "presence_penalty",
         "frequency_penalty": "frequency_penalty",
         "repetition_penalty": "repetition_penalty",
+        "reasoning_effort": "reasoning_effort",
     }
     return {
         wire: getattr(config, attr)

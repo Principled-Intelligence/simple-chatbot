@@ -1,7 +1,9 @@
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_validator
+
+ReasoningEffort = Literal["minimal", "low", "medium", "high", "disable", "none"]
 
 
 class GuardConfig(BaseModel):
@@ -68,7 +70,20 @@ class SimpleChatbotConfig(BaseModel):
     frequency_penalty: float | None = None
     repetition_penalty: float | None = None
 
+    # Reasoning / thinking — forwarded to litellm as `reasoning_effort` when set.
+    # Supported by Gemini 3+ (Vertex / Google AI), OpenAI reasoning models, etc.
+    reasoning_effort: ReasoningEffort | None = None
+
     guard: GuardConfig = GuardConfig()
+
+    @field_validator("reasoning_effort", mode="before")
+    @classmethod
+    def _normalize_reasoning_effort(cls, value: object) -> object:
+        if value is None or isinstance(value, str) and not value.strip():
+            return None
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
 
     @model_validator(mode="after")
     def _validate_config(self) -> Self:
