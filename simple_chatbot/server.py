@@ -9,6 +9,7 @@ from loguru import logger
 from pydantic import BaseModel
 
 import litellm
+import openai
 
 from simple_chatbot.agent import Agent, sampling_kwargs
 from simple_chatbot.config import SimpleChatbotConfig
@@ -208,6 +209,33 @@ def _openai_error(message: str, error_type: str, param: str | None = None) -> di
     }
 
 
+def _provider_error_detail(exc: Exception) -> tuple[int, dict]:
+    """Map an agent/provider failure to an (http_status, error envelope) pair.
+
+    Upstream provider failures (litellm/OpenAI ``APIError`` and subclasses)
+    surface with the provider's own status when it carries one, otherwise 502;
+    anything else is a 500. The exception type and message are always included
+    so clients — including the chat REPL — see the real cause instead of a bare
+    unhandled 500 whose detail only reaches the server log.
+    """
+    message = f"{type(exc).__name__}: {exc}"
+    # litellm raises openai.APIError subclasses for every provider failure;
+    # litellm's own APIError wrapper is a sibling of these, so match the shared
+    # openai base. APIStatusError carries a genuine upstream HTTP status (400
+    # bad-request, 429 rate-limit, ...) worth propagating; connection/timeout/
+    # transform failures (plain APIError, e.g. the Gemini tool-call conversion
+    # crash) have no real upstream response, so map them to 502 Bad Gateway —
+    # litellm defaults their status_code to 500, which we deliberately ignore.
+    if isinstance(exc, openai.APIStatusError):
+        status = getattr(exc, "status_code", None)
+        if not isinstance(status, int) or not (400 <= status <= 599):
+            status = 502
+        return status, _openai_error(message, "upstream_provider_error")
+    if isinstance(exc, openai.APIError):
+        return 502, _openai_error(message, "upstream_provider_error")
+    return 500, _openai_error(message, "server_error")
+
+
 @app.get("/v1/models")
 def list_models():
     model_id = _config.chat_model if _config else "unknown"
@@ -366,41 +394,54 @@ async def responses_create(request: Request, body: ResponsesRequest):
             if scenario is not None:
                 effective_model = config.default_fixture
         new_injections: list = []
-        if scenario is not None:
-            resolved_mode = config.scenario_mode or scenario.mode
-            if resolved_mode == "live":
-                provider = LiveProvider(
-                    acompletion=_acompletion or litellm.acompletion,
-                    model=config.chat_model,
-                    api_base=config.chat_api_base,
-                    sampling_kwargs=sampling_kwargs(config),
+        try:
+            if scenario is not None:
+                resolved_mode = config.scenario_mode or scenario.mode
+                if resolved_mode == "live":
+                    provider = LiveProvider(
+                        acompletion=_acompletion or litellm.acompletion,
+                        model=config.chat_model,
+                        api_base=config.chat_api_base,
+                        sampling_kwargs=sampling_kwargs(config),
+                    )
+                else:
+                    provider = DeterministicProvider()
+                orchestrator = ScenarioOrchestrator(scenario, provider)
+                # Only resume the in-charge agent when the prior turn ran the
+                # SAME scenario (selected by body.model). The orchestrator falls
+                # back to the entry agent on an unknown name, so this is purely
+                # to avoid carrying an agent across scenarios.
+                start_agent = (
+                    prior_entry.get("active_agent")
+                    if prior_entry and prior_entry.get("model") == effective_model
+                    else None
+                )
+                state = await _conversation_state_store.get_or_create(conversation_id)
+                result = await orchestrator.chat(
+                    messages, start_agent=start_agent, state=state
                 )
             else:
-                provider = DeterministicProvider()
-            orchestrator = ScenarioOrchestrator(scenario, provider)
-            # Only resume the in-charge agent when the prior turn ran the SAME
-            # scenario (selected by body.model). The orchestrator falls back to
-            # the entry agent on an unknown name, so this is purely to avoid
-            # carrying an agent across scenarios.
-            start_agent = (
-                prior_entry.get("active_agent")
-                if prior_entry and prior_entry.get("model") == effective_model
-                else None
-            )
-            state = await _conversation_state_store.get_or_create(conversation_id)
-            result = await orchestrator.chat(
-                messages, start_agent=start_agent, state=state
-            )
-        else:
-            # NOTE: the policy log is shared across requests and this slice is
-            # not request-isolated; under concurrent requests a response may
-            # include another request's injections. Acceptable for the
-            # test-harness/evil-agent use case only.
-            before = len(_misbehavior_policy.injections) if _misbehavior_policy else 0
-            result = await _require_agent().chat(messages)
-            new_injections = (
-                _misbehavior_policy.injections[before:] if _misbehavior_policy else []
-            )
+                # NOTE: the policy log is shared across requests and this slice
+                # is not request-isolated; under concurrent requests a response
+                # may include another request's injections. Acceptable for the
+                # test-harness/evil-agent use case only.
+                before = (
+                    len(_misbehavior_policy.injections) if _misbehavior_policy else 0
+                )
+                result = await _require_agent().chat(messages)
+                new_injections = (
+                    _misbehavior_policy.injections[before:]
+                    if _misbehavior_policy
+                    else []
+                )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            status_code, detail = _provider_error_detail(exc)
+            logger.bind(
+                error=str(exc), error_type=type(exc).__name__, status_code=status_code
+            ).exception("Agent/provider call failed")
+            raise HTTPException(status_code=status_code, detail=detail) from exc
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         payload = build_response(

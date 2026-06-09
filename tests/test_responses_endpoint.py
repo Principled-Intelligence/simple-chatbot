@@ -117,6 +117,30 @@ class ResponsesEndpointTests(unittest.TestCase):
         detail = response.json()["detail"]["error"]
         self.assertEqual(detail["param"], "stream")
 
+    def test_provider_failure_surfaces_as_structured_error(self):
+        """A provider/agent failure must reach the client as a structured error
+        envelope (so the OpenAI SDK / chat REPL can show the cause), not a bare
+        unhandled 500 whose detail only lives in the server log."""
+        import litellm
+
+        class _RaisingAgent:
+            async def chat(self, messages):
+                raise litellm.exceptions.APIConnectionError(
+                    message="Unable to convert openai tool calls to gemini tool calls",
+                    llm_provider="vertex_ai",
+                    model="gemini-2.5-pro",
+                )
+
+        server._agent = _RaisingAgent()
+        client = TestClient(server.app, raise_server_exceptions=False)
+        response = client.post("/v1/responses", json={"input": "hello"})
+
+        self.assertEqual(response.status_code, 502, response.text)
+        error = response.json()["detail"]["error"]
+        self.assertEqual(error["type"], "upstream_provider_error")
+        self.assertIn("APIConnectionError", error["message"])
+        self.assertIn("gemini tool calls", error["message"])
+
     def test_unknown_input_item_type_returns_400(self):
         response = self.client.post(
             "/v1/responses",
