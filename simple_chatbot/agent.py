@@ -1,3 +1,4 @@
+import json
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 
@@ -40,6 +41,13 @@ def _sanitize_assistant_dump(dump: dict) -> dict:
     differ (OpenAI/Gemini hide it; Anthropic can round-trip `thinking_blocks`).
     Gemini 3+ multi-turn tool continuity is preserved via thought signatures
     embedded in tool-call `id` values by LiteLLM, which this sanitizer keeps.
+
+    Tool-call `arguments` are forced to valid JSON: strict providers
+    (Vertex/Gemini) `json.loads` every tool call in the message history when
+    serialising it, so a non-JSON argument string (e.g. the `malformed_search`
+    misbehavior knob) would crash the *next* request before it is sent. The raw
+    string is preserved in the `tool_messages` trace, so the malformed call still
+    surfaces in the Responses output; only the replayed copy is normalised.
     """
     sanitized: dict = {
         "role": dump.get("role", "assistant"),
@@ -56,12 +64,31 @@ def _sanitize_assistant_dump(dump: dict) -> dict:
                 "type": tc.get("type", "function"),
                 "function": {
                     "name": (tc.get("function") or {}).get("name"),
-                    "arguments": (tc.get("function") or {}).get("arguments", ""),
+                    "arguments": _provider_safe_args(
+                        (tc.get("function") or {}).get("arguments", "")
+                    ),
                 },
             }
             for tc in tool_calls
         ]
     return sanitized
+
+
+def _provider_safe_args(arguments: Any) -> str:
+    """Coerce a tool call's `arguments` into a JSON-parseable string for replay.
+
+    Returns the original string when it already parses as JSON. Otherwise (an
+    unparseable string such as the `malformed_search` knob) returns ``"{}"`` so
+    strict providers can serialise the history. The raw value lives on in the
+    `tool_messages` trace; this only touches the copy fed back to the provider.
+    """
+    if not isinstance(arguments, str):
+        arguments = "" if arguments is None else str(arguments)
+    try:
+        json.loads(arguments or "{}")
+    except json.JSONDecodeError:
+        return "{}"
+    return arguments
 
 
 def sampling_kwargs(config: SimpleChatbotConfig) -> dict:

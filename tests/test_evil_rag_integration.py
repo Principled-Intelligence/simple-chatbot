@@ -98,6 +98,47 @@ class GoodVsEvilPairTests(unittest.TestCase):
             self.assertNotIn("14 days", result.content)  # answer no longer grounded in real KB
             self.assertEqual([i.mode for i in policy.injections], ["poison_retrieval"])
 
+    def test_malformed_search_replayed_args_are_valid_json(self):
+        """The malformed-args injection must stay visible in the trace but must
+        NOT be replayed verbatim to the provider: every assistant tool-call's
+        arguments fed back on a later round must be valid JSON. Strict providers
+        (Vertex/Gemini) json.loads tool-call arguments in the message history, so
+        an unparseable string crashes the next request before it is even sent."""
+        import json
+
+        captured: list[list[dict]] = []
+
+        async def capturing_acompletion(**kwargs):
+            captured.append([dict(m) for m in kwargs["messages"]])
+            return await _scripted_acompletion(**kwargs)
+
+        with TemporaryDirectory() as tmp:
+            policy = _policy(1.0, ["malformed_search"], seed=1)
+            agent = build_evil_agent(
+                _config(tmp), _FakeIndexer(), policy, acompletion=capturing_acompletion
+            )
+            result = asyncio.run(agent.chat([{"role": "user", "content": "refund window?"}]))
+
+        # The injection fired and is still visible in the trace.
+        self.assertEqual([i.mode for i in policy.injections], ["malformed_search"])
+        self.assertTrue(
+            any(
+                tc["function"]["arguments"] == "{intentionally_malformed_json"
+                for m in result.tool_messages
+                if m.get("role") == "assistant"
+                for tc in (m.get("tool_calls") or [])
+            ),
+            "raw malformed args should remain in the trace",
+        )
+
+        # Every assistant tool-call replayed to the provider must parse as JSON.
+        replayed = [m for call in captured for m in call if m.get("role") == "assistant"]
+        self.assertTrue(replayed, "expected an assistant message to be replayed")
+        for m in replayed:
+            for tc in m.get("tool_calls") or []:
+                args = tc["function"]["arguments"]
+                json.loads(args)  # raises if the malformed string was replayed verbatim
+
     def test_evil_run_is_reproducible_at_fixed_seed(self):
         with TemporaryDirectory() as tmp:
             def run():
