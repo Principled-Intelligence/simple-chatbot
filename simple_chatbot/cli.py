@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 from typing import Literal, Optional
@@ -55,6 +56,75 @@ def _resolve_guard_api_key(
 @cli.callback()
 def _callback():
     """simple-chatbot — simple agentic RAG bot with an OpenAI-compatible server."""
+
+
+def _live_rag_tools() -> list:
+    """The tools the generic (live) RAG agent advertises at execution time,
+    mirroring `serve`: the scripted four-tool set when SIMPLE_CHATBOT_SCRIPTED_LLM
+    is enabled, otherwise just document search. No indexer is needed — only the
+    static tool schemas are read."""
+    scripted = os.environ.get("SIMPLE_CHATBOT_SCRIPTED_LLM", "").strip()
+    if scripted not in ("", "0", "false", "False", "no", "No"):
+        from simple_chatbot.tools import scripted_tools
+
+        return scripted_tools(None)
+    from simple_chatbot.tools import make_search_tool
+
+    return [make_search_tool(None)]
+
+
+@cli.command(name="tools")
+def tools_catalog(
+    agent: Optional[str] = typer.Argument(
+        None,
+        help=(
+            "Agent whose tool catalog to print: a fixture id (e.g. 'cs-routing') "
+            "or 'live-rag' for the generic RAG agent. Omit to use the active agent "
+            "(--default-fixture / SIMPLE_CHATBOT_DEFAULT_FIXTURE, else live-rag)."
+        ),
+    ),
+    default_fixture: Optional[str] = typer.Option(
+        None,
+        help=(
+            "Fixture id treated as the active agent when AGENT is omitted; falls "
+            "back to SIMPLE_CHATBOT_DEFAULT_FIXTURE."
+        ),
+    ),
+):
+    """Print an agent's tool catalog as an OpenAI Responses-API `tools` array (JSON).
+
+    The output is the exact, OpenAI-compliant flat tool shape the server advertises:
+    fixtures render the union of their agents' tools plus the generated `route`
+    tool; the generic RAG agent renders its configured tools projected into the
+    same shape.
+    """
+    from simple_chatbot.scenario_catalog import (
+        build_responses_tools,
+        build_responses_tools_from_defs,
+    )
+    from simple_chatbot.scenario_registry import load_fixtures
+    from simple_chatbot.service_description import LIVE_RAG_KEY
+
+    key = (
+        agent
+        or default_fixture
+        or os.environ.get("SIMPLE_CHATBOT_DEFAULT_FIXTURE")
+        or LIVE_RAG_KEY
+    )
+
+    if key == LIVE_RAG_KEY:
+        tools = build_responses_tools_from_defs(_live_rag_tools())
+    else:
+        registry = load_fixtures()
+        scenario = registry.get(key)
+        if scenario is None:
+            available = ", ".join([LIVE_RAG_KEY, *sorted(registry)])
+            raise typer.BadParameter(
+                f"unknown agent {key!r}; available: {available}"
+            )
+        tools = build_responses_tools(scenario)
+
+    typer.echo(json.dumps(tools, indent=2))
 
 
 @cli.command()

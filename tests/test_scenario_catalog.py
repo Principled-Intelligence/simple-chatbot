@@ -2,7 +2,11 @@
 import unittest
 
 from simple_chatbot.scenario import Agent, Scenario, tool
-from simple_chatbot.scenario_catalog import build_responses_tools
+from simple_chatbot.scenario_catalog import (
+    build_responses_tools,
+    build_responses_tools_from_defs,
+    chat_tool_to_responses_tool,
+)
 from simple_chatbot.agent import ChatResult
 from simple_chatbot.responses import build_response
 
@@ -46,6 +50,57 @@ class CatalogTests(unittest.TestCase):
         s = Scenario(id="x", entry="a", agents=[Agent("a", tools=[lookup_invoice])])
         names = [e["name"] for e in build_responses_tools(s)]
         self.assertNotIn("route", names)
+
+
+class _FakeToolDef:
+    def __init__(self, schema):
+        self.schema = schema
+
+
+class ChatToResponsesToolTests(unittest.TestCase):
+    def test_nested_function_flattened(self):
+        schema = {
+            "type": "function",
+            "function": {
+                "name": "search_documents",
+                "description": "Search the index.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            },
+        }
+        out = chat_tool_to_responses_tool(schema)
+        self.assertEqual(out["type"], "function")
+        self.assertEqual(out["name"], "search_documents")
+        self.assertEqual(out["description"], "Search the index.")
+        self.assertEqual(out["parameters"]["required"], ["query"])
+        # FLAT Responses shape — no nested "function" key.
+        self.assertNotIn("function", out)
+
+    def test_description_omitted_when_blank(self):
+        out = chat_tool_to_responses_tool(
+            {"type": "function", "function": {"name": "t", "parameters": {}}}
+        )
+        self.assertNotIn("description", out)
+
+    def test_builtin_tool_passes_through_unchanged(self):
+        # A future OpenAI built-in (already flat, not a function) must survive.
+        builtin = {"type": "web_search"}
+        out = chat_tool_to_responses_tool(builtin)
+        self.assertEqual(out, builtin)
+        self.assertIsNot(out, builtin)  # defensively copied
+
+    def test_build_from_defs(self):
+        defs = [
+            _FakeToolDef(
+                {"type": "function", "function": {"name": "a", "parameters": {}}}
+            ),
+            _FakeToolDef({"type": "web_search"}),
+        ]
+        out = build_responses_tools_from_defs(defs)
+        self.assertEqual([e.get("name", e["type"]) for e in out], ["a", "web_search"])
 
 
 class BuildResponseToolsTests(unittest.TestCase):

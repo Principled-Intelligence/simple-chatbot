@@ -163,6 +163,7 @@ behavior:
 | Run fixtures live (model-driven)         | `uv run simple-chatbot serve --docs-dir ./docs --scenario-mode live`                                             |
 | Enable the evil RAG agent                | `uv run simple-chatbot serve --docs-dir ./docs --misbehavior-rate 0.5 --misbehavior-seed 7`                      |
 | Run offline (no API keys)                | `SIMPLE_CHATBOT_SCRIPTED_LLM=1 uv run simple-chatbot serve --docs-dir /tmp/empty`                                 |
+| Print an agent's tool catalog            | `uv run simple-chatbot tools cs-routing`                                                                          |
 
 By default, the API binds to `127.0.0.1` and does not require a key. If you bind
 to a network interface such as `--host 0.0.0.0`, set `--api-key` or
@@ -472,6 +473,28 @@ curl -X POST http://localhost:8000/v1/responses \
   -H 'Content-Type: application/json' \
   -d '{"model": "cs-routing", "input": "I need a refund on invoice INV-1."}'
 ```
+
+### Inspecting an agent's tool catalog
+
+`simple-chatbot tools` prints the exact, OpenAI-compliant Responses-API `tools`
+array an agent advertises — handy for wiring up an external evaluator without
+booting the server. The output is the flat function-tool shape
+(`{type, name, parameters, description}`), not the nested chat-completions shape.
+
+```bash
+# A fixture: the union of its agents' tools plus the generated `route` handoff tool.
+uv run simple-chatbot tools cs-routing
+
+# The generic RAG agent (its configured tools — just search_documents by default).
+uv run simple-chatbot tools live-rag
+
+# Omit the argument to use the active agent (--default-fixture / SIMPLE_CHATBOT_DEFAULT_FIXTURE, else live-rag).
+SIMPLE_CHATBOT_DEFAULT_FIXTURE=cs-routing uv run simple-chatbot tools
+```
+
+The catalog reflects what the agent actually has at execution time: under
+`SIMPLE_CHATBOT_SCRIPTED_LLM` the generic agent surfaces its full scripted
+toolset. JSON goes to stdout (pipe it to `jq`); diagnostics go to stderr.
 
 A whole agent-A→B→… topology collapses into **one** `/v1/responses` output
 array (one evaluator turn): a `route` call and the routed subagent's calls land
