@@ -6,6 +6,9 @@ from unittest.mock import AsyncMock, patch
 
 from simple_chatbot.agent import SEARCH_TOOL, Agent
 from simple_chatbot.config import SimpleChatbotConfig
+from simple_chatbot.scenario_catalog import chat_tool_to_responses_tool
+
+SEARCH_TOOL_RESPONSES = chat_tool_to_responses_tool(SEARCH_TOOL)
 
 
 class _FakeIndexer:
@@ -144,6 +147,7 @@ class AgentToolCallTests(unittest.TestCase):
 
             self.assertEqual(result.content, "Final answer.")
             self.assertEqual(result.tools, [SEARCH_TOOL])
+            self.assertEqual(result.responses_tools, [SEARCH_TOOL_RESPONSES])
             self.assertEqual(len(result.tool_messages), 2)
 
             assistant_msg, tool_msg = result.tool_messages
@@ -237,7 +241,24 @@ class AgentToolCallTests(unittest.TestCase):
 
             self.assertEqual(result.content, "Direct answer.")
             self.assertEqual(result.tools, [SEARCH_TOOL])
+            self.assertEqual(result.responses_tools, [SEARCH_TOOL_RESPONSES])
             self.assertEqual(result.tool_messages, [])
+
+    def test_responses_tools_populated_on_empty_knowledge_base(self):
+        class _EmptyIndexer(_FakeIndexer):
+            def document_count(self) -> int:
+                return 0
+
+        with TemporaryDirectory() as tmp:
+            agent = Agent(_config(tmp), _EmptyIndexer())
+            responses = [_Response(_Message(content="unused"), "stop")]
+            with patch("simple_chatbot.agent.litellm.acompletion", new_callable=AsyncMock) as completion:
+                completion.side_effect = responses
+                result = asyncio.run(agent.chat([{"role": "user", "content": "hi"}]))
+
+            # No LLM call happens on an empty KB, but the catalog still surfaces.
+            completion.assert_not_called()
+            self.assertEqual(result.responses_tools, [SEARCH_TOOL_RESPONSES])
 
 
 class AgentAcompletionInjectionTests(unittest.TestCase):

@@ -9,6 +9,7 @@ from simple_chatbot.config import SimpleChatbotConfig
 from simple_chatbot.guard import ScopeGuardGate
 from simple_chatbot.indexer import Indexer
 from simple_chatbot.loader import Document
+from simple_chatbot.scenario_catalog import build_responses_tools_from_defs
 from simple_chatbot.scripted_indexer import ScriptedIndexer
 from simple_chatbot.tools import (
     ToolDef,
@@ -173,6 +174,11 @@ class Agent:
             "total_tokens": 0,
         }
 
+        # Flat Responses-API projection of the tool catalog this agent offers the
+        # model, surfaced on every ChatResult so `Response.tools` echoes the tools
+        # in effect (matching the scenario path and the standard Responses API).
+        responses_tools = build_responses_tools_from_defs(self.tools)
+
         if self.gate is not None:
             decision = await self.gate.check(messages)
             logger.bind(
@@ -187,6 +193,7 @@ class Agent:
                     retrieved_chunks=[],
                     blocked_by_guard=True,
                     tools=[t.schema for t in self.tools],
+                    responses_tools=responses_tools,
                     usage=usage_totals,
                     final_messages=list(messages),
                 )
@@ -197,6 +204,7 @@ class Agent:
                 content=EMPTY_KB_RESPONSE,
                 retrieved_chunks=[],
                 tools=[t.schema for t in self.tools],
+                responses_tools=responses_tools,
                 usage=usage_totals,
                 final_messages=list(messages),
             )
@@ -345,6 +353,7 @@ class Agent:
                 content=last_content,
                 retrieved_chunks=all_chunks,
                 tools=[t.schema for t in self.tools],
+                responses_tools=responses_tools,
                 tool_messages=tool_messages,
                 usage=usage_totals,
                 final_messages=final_messages,
@@ -419,6 +428,7 @@ class Agent:
             content=final_response,
             retrieved_chunks=all_chunks,
             tools=[t.schema for t in self.tools],
+            responses_tools=responses_tools,
             tool_messages=tool_messages,
             usage=usage_totals,
             final_messages=final_messages,
