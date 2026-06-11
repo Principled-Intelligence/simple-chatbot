@@ -1,15 +1,20 @@
 import hmac
 import time
 import uuid
+from dataclasses import asdict
 from typing import Any, Awaitable, Callable
 
 from fastapi import FastAPI, HTTPException, Request
 from loguru import logger
 from pydantic import BaseModel
 
-from simple_chatbot.agent import Agent
+import litellm
+import openai
+
+from simple_chatbot.agent import Agent, sampling_kwargs
 from simple_chatbot.config import SimpleChatbotConfig
 from simple_chatbot.conversation_logger import ConversationLogger, derive_conversation_id
+from simple_chatbot.conversation_state import ConversationStateStore
 from simple_chatbot.guard import ScopeGuardGate
 from simple_chatbot.indexer import Indexer
 from simple_chatbot.responses import (
@@ -18,8 +23,13 @@ from simple_chatbot.responses import (
     build_response,
     normalize_input,
 )
+from simple_chatbot.scenario_orchestrator import ScenarioOrchestrator
+from simple_chatbot.scenario_provider import DeterministicProvider, LiveProvider
+from simple_chatbot.scenario_registry import load_fixtures
 from simple_chatbot.scripted_indexer import ScriptedIndexer
 from simple_chatbot.tools import ToolDef
+from simple_chatbot.evil_rag import build_evil_agent
+from simple_chatbot.misbehavior import MisbehaviorConfig, MisbehaviorPolicy
 
 app = FastAPI(title="simple-chatbot")
 
@@ -27,6 +37,13 @@ _config: SimpleChatbotConfig | None = None
 _agent: Agent | None = None
 _conversation_logger: ConversationLogger | None = None
 _response_store: ResponseStore | None = None
+_scenario_registry: dict | None = None
+_acompletion: Callable[..., Awaitable[Any]] | None = None
+_misbehavior_policy: MisbehaviorPolicy | None = None
+
+# Per-conversation mock-tool state for scenario fixtures. Defaulted at import so
+# tests that poke server globals (rather than calling init) still find a store.
+_conversation_state_store: ConversationStateStore = ConversationStateStore()
 
 
 def _require_config() -> SimpleChatbotConfig:
@@ -82,8 +99,9 @@ def init(
     acompletion: Callable[..., Awaitable[Any]] | None = None,
     tools: list[ToolDef] | None = None,
 ) -> None:
-    global _config, _agent, _conversation_logger, _response_store
+    global _config, _agent, _conversation_logger, _response_store, _scenario_registry, _acompletion, _misbehavior_policy, _conversation_state_store
     _config = config
+    _acompletion = acompletion
     gate: ScopeGuardGate | None = None
     if config.guard.enabled:
         gate = ScopeGuardGate(config.guard, config.system_prompt)
@@ -95,8 +113,35 @@ def init(
             block_classes=config.guard.block_classes,
         ).info("Scope guard enabled")
     _agent = Agent(config, indexer, gate=gate, acompletion=acompletion, tools=tools)
+    _misbehavior_policy = None
+    if config.misbehavior_rate and config.misbehavior_rate > 0 and config.misbehavior_modes:
+        _misbehavior_policy = MisbehaviorPolicy(
+            MisbehaviorConfig(
+                rate=config.misbehavior_rate,
+                modes=tuple(config.misbehavior_modes),
+                seed=config.misbehavior_seed,
+            )
+        )
+        _agent = build_evil_agent(
+            config, indexer, _misbehavior_policy, acompletion=acompletion, gate=gate
+        )
+        logger.bind(
+            rate=config.misbehavior_rate, modes=config.misbehavior_modes
+        ).warning("Misbehavior injection ENABLED — evil RAG agent active (not for production)")
+    elif config.misbehavior_rate and config.misbehavior_rate > 0:
+        logger.bind(rate=config.misbehavior_rate).warning(
+            "misbehavior_rate>0 but no misbehavior_modes set — running the GOOD "
+            "agent; set --misbehavior-modes to enable the evil RAG agent"
+        )
     _conversation_logger = ConversationLogger(config.conversation_log_dir)
     _response_store = ResponseStore()
+    _conversation_state_store = ConversationStateStore()
+    _scenario_registry = load_fixtures()
+    if config.default_fixture and config.default_fixture not in _scenario_registry:
+        raise ValueError(
+            f"default_fixture {config.default_fixture!r} is not a known fixture; "
+            f"available: {sorted(_scenario_registry)}"
+        )
     logger.bind(
         model=config.chat_model,
         top_k=config.top_k,
@@ -123,6 +168,9 @@ class ResponsesRequest(BaseModel):
     tool_choice: object = None
     user: str | None = None
     stream: bool = False
+    # Forwarded to the model as `max_tokens` on live calls; deterministic
+    # fixture replies are pre-authored and ignore it.
+    max_output_tokens: int | None = None
     # All other Responses API fields are accepted but ignored.
     model_config = {"extra": "allow"}
 
@@ -164,14 +212,42 @@ def _openai_error(message: str, error_type: str, param: str | None = None) -> di
     }
 
 
+def _provider_error_detail(exc: Exception) -> tuple[int, dict]:
+    """Map an agent/provider failure to an (http_status, error envelope) pair.
+
+    Upstream provider failures (litellm/OpenAI ``APIError`` and subclasses)
+    surface with the provider's own status when it carries one, otherwise 502;
+    anything else is a 500. The exception type and message are always included
+    so clients — including the chat REPL — see the real cause instead of a bare
+    unhandled 500 whose detail only reaches the server log.
+    """
+    message = f"{type(exc).__name__}: {exc}"
+    # litellm raises openai.APIError subclasses for every provider failure;
+    # litellm's own APIError wrapper is a sibling of these, so match the shared
+    # openai base. APIStatusError carries a genuine upstream HTTP status (400
+    # bad-request, 429 rate-limit, ...) worth propagating; connection/timeout/
+    # transform failures (plain APIError, e.g. the Gemini tool-call conversion
+    # crash) have no real upstream response, so map them to 502 Bad Gateway —
+    # litellm defaults their status_code to 500, which we deliberately ignore.
+    if isinstance(exc, openai.APIStatusError):
+        status = getattr(exc, "status_code", None)
+        if not isinstance(status, int) or not (400 <= status <= 599):
+            status = 502
+        return status, _openai_error(message, "upstream_provider_error")
+    if isinstance(exc, openai.APIError):
+        return 502, _openai_error(message, "upstream_provider_error")
+    return 500, _openai_error(message, "server_error")
+
+
 @app.get("/v1/models")
 def list_models():
     model_id = _config.chat_model if _config else "unknown"
-    logger.bind(model_id=model_id).debug("Returning model list")
-    return {
-        "object": "list",
-        "data": [{"id": model_id, "object": "model", "created": int(time.time()), "owned_by": "simple-chatbot"}],
-    }
+    created = int(time.time())
+    data = [{"id": model_id, "object": "model", "created": created, "owned_by": "simple-chatbot"}]
+    for fixture_id in sorted(_scenario_registry or {}):
+        data.append({"id": fixture_id, "object": "model", "created": created, "owned_by": "simple-chatbot-fixture"})
+    logger.bind(model_id=model_id, fixture_count=len(_scenario_registry or {})).debug("Returning model list")
+    return {"object": "list", "data": data}
 
 
 @app.post("/v1/chat/completions")
@@ -309,7 +385,71 @@ async def responses_create(request: Request, body: ResponsesRequest):
         ).info("Response create started")
 
         start = time.perf_counter()
-        result = await _require_agent().chat(messages)
+        registry = _scenario_registry or {}
+        config = _require_config()
+        # Resolve which fixture (if any) handles this turn. An explicitly named
+        # fixture always wins; otherwise fall back to the server's default
+        # fixture so a client that can't set the model still gets one.
+        effective_model = body.model
+        scenario = registry.get(effective_model)
+        if scenario is None and config.default_fixture:
+            scenario = registry.get(config.default_fixture)
+            if scenario is not None:
+                effective_model = config.default_fixture
+        new_injections: list = []
+        try:
+            if scenario is not None:
+                resolved_mode = config.scenario_mode or scenario.mode
+                if resolved_mode == "live":
+                    live_sampling = sampling_kwargs(config)
+                    if body.max_output_tokens is not None:
+                        live_sampling["max_tokens"] = body.max_output_tokens
+                    provider = LiveProvider(
+                        acompletion=_acompletion or litellm.acompletion,
+                        model=config.chat_model,
+                        api_base=config.chat_api_base,
+                        sampling_kwargs=live_sampling,
+                    )
+                else:
+                    provider = DeterministicProvider()
+                orchestrator = ScenarioOrchestrator(scenario, provider)
+                # Only resume the in-charge agent when the prior turn ran the
+                # SAME scenario (selected by body.model). The orchestrator falls
+                # back to the entry agent on an unknown name, so this is purely
+                # to avoid carrying an agent across scenarios.
+                start_agent = (
+                    prior_entry.get("active_agent")
+                    if prior_entry and prior_entry.get("model") == effective_model
+                    else None
+                )
+                state = await _conversation_state_store.get_or_create(conversation_id)
+                result = await orchestrator.chat(
+                    messages, start_agent=start_agent, state=state
+                )
+            else:
+                # NOTE: the policy log is shared across requests and this slice
+                # is not request-isolated; under concurrent requests a response
+                # may include another request's injections. Acceptable for the
+                # test-harness/evil-agent use case only.
+                before = (
+                    len(_misbehavior_policy.injections) if _misbehavior_policy else 0
+                )
+                result = await _require_agent().chat(
+                    messages, max_output_tokens=body.max_output_tokens
+                )
+                new_injections = (
+                    _misbehavior_policy.injections[before:]
+                    if _misbehavior_policy
+                    else []
+                )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            status_code, detail = _provider_error_detail(exc)
+            logger.bind(
+                error=str(exc), error_type=type(exc).__name__, status_code=status_code
+            ).exception("Agent/provider call failed")
+            raise HTTPException(status_code=status_code, detail=detail) from exc
         elapsed_ms = (time.perf_counter() - start) * 1000
 
         payload = build_response(
@@ -318,6 +458,12 @@ async def responses_create(request: Request, body: ResponsesRequest):
             previous_response_id=body.previous_response_id,
             conversation_id=conversation_id,
         )
+
+        injection_dicts = (
+            [asdict(i) for i in new_injections] if scenario is None else []
+        )
+        if injection_dicts:
+            payload["misbehavior_injections"] = injection_dicts
 
         logger.bind(
             response_id=payload["id"],
@@ -330,6 +476,7 @@ async def responses_create(request: Request, body: ResponsesRequest):
             messages=messages,
             response=result.content,
             chunks=[{"text": d.text, **d.metadata} for d in result.retrieved_chunks],
+            misbehavior_injections=injection_dicts,
         )
 
         await _require_response_store().put(
@@ -340,6 +487,8 @@ async def responses_create(request: Request, body: ResponsesRequest):
                 "session_messages": list(result.final_messages),
                 "response_json": payload,
                 "conversation_id": conversation_id,
+                "model": effective_model,
+                "active_agent": result.active_agent,
             },
         )
 

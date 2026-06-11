@@ -6,6 +6,9 @@ from unittest.mock import AsyncMock, patch
 
 from simple_chatbot.agent import SEARCH_TOOL, Agent
 from simple_chatbot.config import SimpleChatbotConfig
+from simple_chatbot.scenario_catalog import chat_tool_to_responses_tool
+
+SEARCH_TOOL_RESPONSES = chat_tool_to_responses_tool(SEARCH_TOOL)
 
 
 class _FakeIndexer:
@@ -144,6 +147,7 @@ class AgentToolCallTests(unittest.TestCase):
 
             self.assertEqual(result.content, "Final answer.")
             self.assertEqual(result.tools, [SEARCH_TOOL])
+            self.assertEqual(result.responses_tools, [SEARCH_TOOL_RESPONSES])
             self.assertEqual(len(result.tool_messages), 2)
 
             assistant_msg, tool_msg = result.tool_messages
@@ -160,6 +164,69 @@ class AgentToolCallTests(unittest.TestCase):
             self.assertEqual(tool_msg["name"], "search_documents")
             self.assertIn("No relevant documents", tool_msg["content"])
 
+    def test_successful_tool_result_is_not_flagged_as_error(self):
+        with TemporaryDirectory() as tmp:
+            indexer = _FakeIndexer()
+            agent = Agent(_config(tmp), indexer)
+            responses = [
+                _Response(
+                    _Message(
+                        tool_calls=[
+                            _ToolCall("call_1", "search_documents", '{"query": "alpha"}'),
+                        ]
+                    ),
+                    "tool_calls",
+                ),
+                _Response(_Message(content="Final answer."), "stop"),
+            ]
+
+            with patch("simple_chatbot.agent.litellm.acompletion", new_callable=AsyncMock) as completion:
+                completion.side_effect = responses
+                result = asyncio.run(agent.chat([{"role": "user", "content": "hello"}]))
+
+            _, tool_msg = result.tool_messages
+            self.assertFalse(tool_msg["is_error"])
+            # The message replayed to the LLM must stay free of trace-only keys.
+            replayed = completion.await_args_list[1].kwargs["messages"][-1]
+            self.assertEqual(replayed["role"], "tool")
+            self.assertNotIn("is_error", replayed)
+
+    def test_executor_exception_flags_tool_message_as_error(self):
+        # An executor that raises (e.g. litellm.RateLimitError from a nested
+        # call) is still fed back to the model, but the trace message is flagged
+        # so the Responses adapter can map it to a non-"completed" status.
+        class _RaisingIndexer(_FakeIndexer):
+            async def search(self, query: str) -> list:
+                raise RuntimeError("litellm.RateLimitError: 429 RESOURCE_EXHAUSTED")
+
+        with TemporaryDirectory() as tmp:
+            indexer = _RaisingIndexer()
+            agent = Agent(_config(tmp), indexer)
+            responses = [
+                _Response(
+                    _Message(
+                        tool_calls=[
+                            _ToolCall("call_1", "search_documents", '{"query": "alpha"}'),
+                        ]
+                    ),
+                    "tool_calls",
+                ),
+                _Response(_Message(content="Sorry, rate limited."), "stop"),
+            ]
+
+            with patch("simple_chatbot.agent.litellm.acompletion", new_callable=AsyncMock) as completion:
+                completion.side_effect = responses
+                result = asyncio.run(agent.chat([{"role": "user", "content": "hello"}]))
+
+            self.assertEqual(result.content, "Sorry, rate limited.")
+            _, tool_msg = result.tool_messages
+            self.assertTrue(tool_msg["is_error"])
+            self.assertIn("Tool error:", tool_msg["content"])
+            self.assertIn("RateLimitError", tool_msg["content"])
+            # Error text is still fed back to the model on the next round.
+            replayed = completion.await_args_list[1].kwargs["messages"][-1]
+            self.assertIn("Tool error:", replayed["content"])
+
     def test_chat_result_tools_present_when_no_tool_calls(self):
         with TemporaryDirectory() as tmp:
             indexer = _FakeIndexer()
@@ -174,7 +241,24 @@ class AgentToolCallTests(unittest.TestCase):
 
             self.assertEqual(result.content, "Direct answer.")
             self.assertEqual(result.tools, [SEARCH_TOOL])
+            self.assertEqual(result.responses_tools, [SEARCH_TOOL_RESPONSES])
             self.assertEqual(result.tool_messages, [])
+
+    def test_responses_tools_populated_on_empty_knowledge_base(self):
+        class _EmptyIndexer(_FakeIndexer):
+            def document_count(self) -> int:
+                return 0
+
+        with TemporaryDirectory() as tmp:
+            agent = Agent(_config(tmp), _EmptyIndexer())
+            responses = [_Response(_Message(content="unused"), "stop")]
+            with patch("simple_chatbot.agent.litellm.acompletion", new_callable=AsyncMock) as completion:
+                completion.side_effect = responses
+                result = asyncio.run(agent.chat([{"role": "user", "content": "hi"}]))
+
+            # No LLM call happens on an empty KB, but the catalog still surfaces.
+            completion.assert_not_called()
+            self.assertEqual(result.responses_tools, [SEARCH_TOOL_RESPONSES])
 
 
 class AgentAcompletionInjectionTests(unittest.TestCase):

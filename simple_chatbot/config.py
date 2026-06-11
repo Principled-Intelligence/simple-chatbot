@@ -1,7 +1,9 @@
 from pathlib import Path
 from typing import Literal, Self
 
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, field_validator, model_validator
+
+ReasoningEffort = Literal["minimal", "low", "medium", "high", "disable", "none"]
 
 
 class GuardConfig(BaseModel):
@@ -43,6 +45,22 @@ class SimpleChatbotConfig(BaseModel):
     max_tool_rounds: int = 3
     system_prompt: str | None = None
 
+    # Scenario engine: server-level override of a scenario's own `mode`.
+    # None = honor each scenario's per-scenario default.
+    scenario_mode: Literal["deterministic", "live"] | None = None
+
+    # Scenario engine: fixture id to run when a /v1/responses request does not
+    # name a known fixture (e.g. a client that can't set the model). None = no
+    # fallback (unknown/absent model uses the RAG agent path, as before).
+    default_fixture: str | None = None
+
+    # Misbehavior injection (evil RAG agent). rate=None disables it (default,
+    # production/good agent). rate>0 with modes enables the evil twin. modes must
+    # be a subset of simple_chatbot.misbehavior.KNOWN_MODES.
+    misbehavior_rate: float | None = None
+    misbehavior_modes: list[str] = []
+    misbehavior_seed: int = 0
+
     # Sampling parameters forwarded to litellm — all default None (use model defaults).
     temperature: float | None = None
     top_p: float | None = None
@@ -52,7 +70,20 @@ class SimpleChatbotConfig(BaseModel):
     frequency_penalty: float | None = None
     repetition_penalty: float | None = None
 
+    # Reasoning / thinking — forwarded to litellm as `reasoning_effort` when set.
+    # Supported by Gemini 3+ (Vertex / Google AI), OpenAI reasoning models, etc.
+    reasoning_effort: ReasoningEffort | None = None
+
     guard: GuardConfig = GuardConfig()
+
+    @field_validator("reasoning_effort", mode="before")
+    @classmethod
+    def _normalize_reasoning_effort(cls, value: object) -> object:
+        if value is None or isinstance(value, str) and not value.strip():
+            return None
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
 
     @model_validator(mode="after")
     def _validate_config(self) -> Self:
@@ -62,6 +93,18 @@ class SimpleChatbotConfig(BaseModel):
             raise ValueError("chunk_overlap must be greater than or equal to 0.")
         if self.chunk_overlap >= self.chunk_size:
             raise ValueError("chunk_overlap must be smaller than chunk_size.")
+
+        if self.misbehavior_rate is not None:
+            if not 0.0 <= self.misbehavior_rate <= 1.0:
+                raise ValueError("misbehavior_rate must be in [0.0, 1.0].")
+            from simple_chatbot.misbehavior import KNOWN_MODES
+
+            unknown = set(self.misbehavior_modes) - KNOWN_MODES
+            if unknown:
+                raise ValueError(
+                    f"unknown misbehavior_modes: {sorted(unknown)}; "
+                    f"known: {sorted(KNOWN_MODES)}"
+                )
 
         if not self.guard.enabled:
             return self

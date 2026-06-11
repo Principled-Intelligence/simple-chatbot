@@ -163,11 +163,55 @@ class BuildOutputItemsTests(unittest.TestCase):
                     {"id": "c1", "type": "function", "function": {"name": "search_documents", "arguments": "{not"}},
                 ],
             },
-            {"role": "tool", "tool_call_id": "c1", "name": "search_documents", "content": "Tool error: bad JSON"},
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "name": "search_documents",
+                "content": "Tool error: bad JSON",
+                "is_error": True,
+            },
         ]
         items = build_output_items(_chat_result("recovered", tool_messages))
         fco = next(it for it in items if it["type"] == "function_call_output")
         self.assertIn("Tool error", fco["output"])
+
+    def test_successful_tool_output_status_completed(self):
+        tool_messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "name": "search_documents", "content": "RESULT"},
+        ]
+        items = build_output_items(_chat_result("final", tool_messages))
+        fco = next(it for it in items if it["type"] == "function_call_output")
+        self.assertEqual(fco["status"], "completed")
+
+    def test_errored_tool_output_status_incomplete(self):
+        # A tool that errored (e.g. executor raised RateLimitError) is still fed
+        # back to the model, but its function_call_output must not be reported
+        # as "completed".
+        tool_messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "name": "search_documents",
+                "content": "Tool error: litellm.RateLimitError: 429 RESOURCE_EXHAUSTED",
+                "is_error": True,
+            },
+        ]
+        items = build_output_items(_chat_result("sorry, rate limited", tool_messages))
+        fco = next(it for it in items if it["type"] == "function_call_output")
+        self.assertEqual(fco["status"], "incomplete")
+        self.assertIn("RateLimitError", fco["output"])
 
     def test_each_item_has_unique_stable_id(self):
         items = build_output_items(_chat_result("hi"))
@@ -227,6 +271,75 @@ class BuildOutputItemsTests(unittest.TestCase):
         types = [it["type"] for it in items]
         self.assertEqual(types, ["function_call", "function_call_output", "function_call", "function_call_output", "message"])
         self.assertEqual(items[-1]["content"][0]["text"], "forced final")
+
+
+class BuildOutputItemsIntermediateMessageTests(unittest.TestCase):
+    def test_intermediate_assistant_text_emits_message_before_its_tool_calls(self):
+        # An assistant turn that says something to the user AND calls a tool
+        # should surface that text as its own (non-terminal) message item,
+        # positioned before the function_call, in addition to the final message.
+        tool_messages = [
+            {
+                "role": "assistant",
+                "content": "Let me look that up for you.",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "name": "search_documents", "content": "R1"},
+        ]
+        items = build_output_items(_chat_result("Here is the answer.", tool_messages))
+        types = [it["type"] for it in items]
+        self.assertEqual(types, ["message", "function_call", "function_call_output", "message"])
+        self.assertEqual(items[0]["content"][0]["text"], "Let me look that up for you.")
+        self.assertEqual(items[0]["role"], "assistant")
+        self.assertEqual(items[-1]["content"][0]["text"], "Here is the answer.")
+
+    def test_intermediate_message_after_reasoning_before_tool_calls(self):
+        # Ordering within one assistant turn: reasoning, then the user-facing
+        # text, then the function_call it accompanies.
+        tool_messages = [
+            {
+                "role": "assistant",
+                "reasoning_content": "I should route this to billing.",
+                "content": "I'll connect you to our billing team.",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "route", "arguments": '{"agent": "billing"}'}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "name": "route", "content": '{"routed": true}'},
+        ]
+        items = build_output_items(_chat_result("done", tool_messages))
+        types = [it["type"] for it in items]
+        self.assertEqual(types, ["reasoning", "message", "function_call", "function_call_output", "message"])
+        self.assertEqual(items[1]["content"][0]["text"], "I'll connect you to our billing team.")
+
+    def test_empty_assistant_content_with_tool_calls_emits_no_intermediate_message(self):
+        # Regression guard: empty/None content must NOT produce a message item.
+        tool_messages = [
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {"id": "c1", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c1", "name": "search_documents", "content": "R1"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "c2", "type": "function", "function": {"name": "search_documents", "arguments": "{}"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "c2", "name": "search_documents", "content": "R2"},
+        ]
+        items = build_output_items(_chat_result("final", tool_messages))
+        types = [it["type"] for it in items]
+        self.assertEqual(
+            types,
+            ["function_call", "function_call_output", "function_call", "function_call_output", "message"],
+        )
 
 
 from simple_chatbot.responses import build_response

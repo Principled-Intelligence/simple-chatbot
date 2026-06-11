@@ -106,6 +106,22 @@ def _build_reasoning_item(text: str) -> dict:
     ).model_dump()
 
 
+def _build_message_item(text: str) -> dict:
+    return ResponseOutputMessage(
+        id=_msg_id(),
+        type="message",
+        role="assistant",
+        status="completed",
+        content=[
+            ResponseOutputText(
+                type="output_text",
+                text=text,
+                annotations=[],
+            )
+        ],
+    ).model_dump()
+
+
 def build_output_items(result: ChatResult) -> list[dict]:
     """Convert a ChatResult into the ordered Responses API `output` array."""
     items: list[dict] = []
@@ -117,6 +133,13 @@ def build_output_items(result: ChatResult) -> list[dict]:
             reasoning = msg.get("reasoning_content")
             if reasoning:
                 items.append(_build_reasoning_item(reasoning))
+            # An assistant turn may speak to the user AND call a tool. Surface
+            # that text as a non-terminal `message` item (after reasoning,
+            # before the function_call it accompanies). Empty/None content is
+            # the common tool-only case and produces no message item.
+            intermediate = msg.get("content")
+            if intermediate:
+                items.append(_build_message_item(intermediate))
             for tc in msg.get("tool_calls") or []:
                 fn = tc.get("function") or {}
                 items.append(
@@ -136,7 +159,11 @@ def build_output_items(result: ChatResult) -> list[dict]:
                     id=_fco_id(),
                     call_id=msg["tool_call_id"],
                     output=msg.get("content") or "",
-                    status="completed",
+                    # Errored tool calls are still fed back to the model, but
+                    # the wire status must reflect that the call did not succeed.
+                    # The Responses item status enum has no "failed", so an
+                    # error maps to "incomplete".
+                    status="incomplete" if msg.get("is_error") else "completed",
                 ).model_dump()
             )
 
@@ -144,21 +171,7 @@ def build_output_items(result: ChatResult) -> list[dict]:
     if result.final_reasoning_content:
         items.append(_build_reasoning_item(result.final_reasoning_content))
 
-    items.append(
-        ResponseOutputMessage(
-            id=_msg_id(),
-            type="message",
-            role="assistant",
-            status="completed",
-            content=[
-                ResponseOutputText(
-                    type="output_text",
-                    text=result.content or "",
-                    annotations=[],
-                )
-            ],
-        ).model_dump()
-    )
+    items.append(_build_message_item(result.content or ""))
 
     return items
 
@@ -200,6 +213,7 @@ def build_response(
     payload["output"] = build_output_items(result)
     # Ensure created_at is an int (the SDK model uses float internally).
     payload["created_at"] = int(payload["created_at"])
+    payload["tools"] = result.responses_tools
     # Non-standard extension we add at the envelope level (same as chat completions).
     payload["conversation_id"] = conversation_id
     return payload
