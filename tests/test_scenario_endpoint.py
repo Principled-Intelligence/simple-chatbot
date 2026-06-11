@@ -16,7 +16,7 @@ class _FakeConversationLogger:
 
 
 class _FakeAgent:
-    async def chat(self, messages):
+    async def chat(self, messages, max_output_tokens=None):
         from simple_chatbot.agent import ChatResult
         return ChatResult(content="agent-path", retrieved_chunks=[],
                           final_messages=list(messages) + [{"role": "assistant", "content": "agent-path"}])

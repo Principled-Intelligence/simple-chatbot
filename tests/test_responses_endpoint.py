@@ -16,7 +16,7 @@ class _FakeAgent:
         self._tool_messages = tool_messages or []
         self._usage = usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-    async def chat(self, messages: list[dict]) -> ChatResult:
+    async def chat(self, messages: list[dict], max_output_tokens: int | None = None) -> ChatResult:
         self.calls.append(list(messages))
         # final_messages = the input we received plus the final assistant message
         final = list(messages) + [{"role": "assistant", "content": self._content}]
@@ -124,7 +124,7 @@ class ResponsesEndpointTests(unittest.TestCase):
         import litellm
 
         class _RaisingAgent:
-            async def chat(self, messages):
+            async def chat(self, messages, max_output_tokens=None):
                 raise litellm.exceptions.APIConnectionError(
                     message="Unable to convert openai tool calls to gemini tool calls",
                     llm_provider="vertex_ai",

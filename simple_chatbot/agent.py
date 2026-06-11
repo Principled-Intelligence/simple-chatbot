@@ -162,7 +162,9 @@ class Agent:
         """Return only the sampling params the user set explicitly (skip None)."""
         return sampling_kwargs(self.config)
 
-    async def chat(self, messages: list[dict]) -> ChatResult:
+    async def chat(
+        self, messages: list[dict], max_output_tokens: int | None = None
+    ) -> ChatResult:
         logger.bind(
             message_count=len(messages),
             last_role=messages[-1].get("role") if messages else "none",
@@ -242,6 +244,8 @@ class Agent:
                     "Using custom chat API base"
                 )
             kwargs.update(self._sampling_kwargs())
+            if max_output_tokens is not None:
+                kwargs["max_tokens"] = max_output_tokens
 
             logger.bind(
                 model=self.config.chat_model,
@@ -385,6 +389,8 @@ class Agent:
         if self.config.chat_api_base:
             forced_response_kwargs["api_base"] = self.config.chat_api_base
         forced_response_kwargs.update(self._sampling_kwargs())
+        if max_output_tokens is not None:
+            forced_response_kwargs["max_tokens"] = max_output_tokens
 
         final_response = ""
         final_reasoning = None

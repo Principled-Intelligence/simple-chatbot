@@ -168,6 +168,9 @@ class ResponsesRequest(BaseModel):
     tool_choice: object = None
     user: str | None = None
     stream: bool = False
+    # Forwarded to the model as `max_tokens` on live calls; deterministic
+    # fixture replies are pre-authored and ignore it.
+    max_output_tokens: int | None = None
     # All other Responses API fields are accepted but ignored.
     model_config = {"extra": "allow"}
 
@@ -398,11 +401,14 @@ async def responses_create(request: Request, body: ResponsesRequest):
             if scenario is not None:
                 resolved_mode = config.scenario_mode or scenario.mode
                 if resolved_mode == "live":
+                    live_sampling = sampling_kwargs(config)
+                    if body.max_output_tokens is not None:
+                        live_sampling["max_tokens"] = body.max_output_tokens
                     provider = LiveProvider(
                         acompletion=_acompletion or litellm.acompletion,
                         model=config.chat_model,
                         api_base=config.chat_api_base,
-                        sampling_kwargs=sampling_kwargs(config),
+                        sampling_kwargs=live_sampling,
                     )
                 else:
                     provider = DeterministicProvider()
@@ -428,7 +434,9 @@ async def responses_create(request: Request, body: ResponsesRequest):
                 before = (
                     len(_misbehavior_policy.injections) if _misbehavior_policy else 0
                 )
-                result = await _require_agent().chat(messages)
+                result = await _require_agent().chat(
+                    messages, max_output_tokens=body.max_output_tokens
+                )
                 new_injections = (
                     _misbehavior_policy.injections[before:]
                     if _misbehavior_policy

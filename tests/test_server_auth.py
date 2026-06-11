@@ -13,7 +13,7 @@ class _FakeAgent:
     def __init__(self) -> None:
         self.calls = 0
 
-    async def chat(self, messages: list[dict]) -> ChatResult:
+    async def chat(self, messages: list[dict], max_output_tokens: int | None = None) -> ChatResult:
         self.calls += 1
         return ChatResult(content="ok", retrieved_chunks=[])
 
