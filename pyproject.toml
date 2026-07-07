@@ -5,7 +5,7 @@ description = "Simple agentic RAG bot with an OpenAI-compatible server"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
-    "litellm>=1.83.4",
+    "litellm>=1.84.0",
     "chromadb>=1.5.7",
     "fastapi>=0.135.3",
     "uvicorn[standard]>=0.44.0",
