@@ -140,11 +140,17 @@ class Agent:
             "repetition_penalty": "repetition_penalty",
             "reasoning_effort": "reasoning_effort",
         }
-        return {
+        out = {
             wire: getattr(self.config, attr)
             for attr, wire in field_map.items()
             if getattr(self.config, attr) is not None
         }
+        # `thinking` is not a straight passthrough like the rest: the config holds
+        # the bare type ("disabled"/"adaptive") because that is what a CLI flag can
+        # carry, while the wire wants an object. litellm forwards it untouched.
+        if self.config.thinking is not None:
+            out["thinking"] = {"type": self.config.thinking}
+        return out
 
     async def chat(self, messages: list[dict]) -> ChatResult:
         logger.bind(

@@ -66,6 +66,17 @@ class SimpleChatbotConfig(BaseModel):
     # unless reasoning is explicitly disabled; set "none" for those. None = model default.
     reasoning_effort: str | None = None
 
+    # Anthropic's `thinking.type`, sent as a raw wire parameter: "disabled" or
+    # "adaptive". None = send nothing.
+    #
+    # This is NOT a spelling of reasoning_effort, and the difference matters. There
+    # is no effort value meaning "off" on Anthropic's adaptive-default models
+    # (Sonnet 5, Opus 4.6+): litellm maps effort `none` to NO thinking parameter at
+    # all, and with nothing sent those models think anyway, because adaptive is
+    # their default. Only thinking.type=disabled stops it. Set both and the wire
+    # would carry a contradiction, so callers should set one or the other.
+    thinking: str | None = None
+
     # Route the downstream model call through the OpenAI Responses API
     # (litellm.aresponses) instead of chat completions. Needed for gpt-5.6 reasoning
     # models, which reject function tools + reasoning on /v1/chat/completions but accept
