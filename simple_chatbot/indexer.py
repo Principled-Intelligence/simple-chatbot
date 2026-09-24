@@ -10,9 +10,17 @@ from loguru import logger
 from simple_chatbot.config import SimpleChatbotConfig
 from simple_chatbot.loader import Document
 
-_EMBED_BATCH_SIZE = 500
+_DEFAULT_EMBED_BATCH_SIZE = 500
+# Vertex text-embeddings accept at most 250 instances per request.
+_VERTEX_EMBED_BATCH_SIZE = 250
 _MAX_CONCURRENT_EMBED_BATCHES = 10
 _META_FILE = "simple_chatbot_index_meta.json"
+
+
+def _embed_batch_size(config: SimpleChatbotConfig) -> int:
+    if config.embedding_model.startswith("vertex_ai/"):
+        return _VERTEX_EMBED_BATCH_SIZE
+    return _DEFAULT_EMBED_BATCH_SIZE
 
 
 def _doc_id(text: str) -> str:
@@ -27,7 +35,9 @@ async def _embed(texts: list[str], config: SimpleChatbotConfig) -> list[list[flo
     kwargs: dict = {"model": config.embedding_model, "input": texts}
     if config.embedding_api_base:
         kwargs["api_base"] = config.embedding_api_base
-        logger.bind(api_base=config.embedding_api_base).debug("Using custom embedding API base")
+        logger.bind(api_base=config.embedding_api_base).debug(
+            "Using custom embedding API base"
+        )
     response = await litellm.aembedding(**kwargs)
     embeddings = [item["embedding"] for item in response.data]
     logger.bind(
@@ -84,7 +94,9 @@ class Indexer:
                 ).warning("Embedding config changed since last run")
                 try:
                     self._client.delete_collection(config.collection_name)
-                    logger.bind(collection=config.collection_name).info("Deleted stale collection")
+                    logger.bind(collection=config.collection_name).info(
+                        "Deleted stale collection"
+                    )
                 except Exception as exc:
                     logger.bind(error=str(exc)).warning("Could not delete collection")
             else:
@@ -103,12 +115,16 @@ class Indexer:
 
     def _save_meta(self) -> None:
         self._meta_path.parent.mkdir(parents=True, exist_ok=True)
-        self._meta_path.write_text(json.dumps(_config_fingerprint(self.config), indent=2))
+        self._meta_path.write_text(
+            json.dumps(_config_fingerprint(self.config), indent=2)
+        )
         logger.bind(path=str(self._meta_path)).debug("Index metadata saved")
 
     def _reset_collection(self) -> None:
         self._client.delete_collection(self.config.collection_name)
-        logger.bind(collection=self.config.collection_name).info("Deleted collection for force re-index")
+        logger.bind(collection=self.config.collection_name).info(
+            "Deleted collection for force re-index"
+        )
         self.collection = self._client.get_or_create_collection(
             name=self.config.collection_name,
             metadata={"hnsw:space": "cosine"},
@@ -126,6 +142,7 @@ class Indexer:
 
     def index(self, docs: list[Document], force: bool = False) -> None:
         logger.bind(chunk_count=len(docs), force=force).info("Starting indexing")
+        batch_size = _embed_batch_size(self.config)
 
         if force:
             self._reset_collection()
@@ -162,11 +179,13 @@ class Indexer:
             ).debug("Deduplicated document chunks")
 
             existing_ids: set[str] = set()
-            for i in range(0, len(unique_ids), _EMBED_BATCH_SIZE):
-                batch_ids = unique_ids[i : i + _EMBED_BATCH_SIZE]
+            for i in range(0, len(unique_ids), batch_size):
+                batch_ids = unique_ids[i : i + batch_size]
                 result = self.collection.get(ids=batch_ids, include=[])
                 existing_ids.update(result["ids"])
-            logger.bind(existing=len(existing_ids), unique=len(unique_ids)).debug("Checked cached chunks")
+            logger.bind(existing=len(existing_ids), unique=len(unique_ids)).debug(
+                "Checked cached chunks"
+            )
 
             new_docs = [d for doc_id, d in seen.items() if doc_id not in existing_ids]
 
@@ -185,20 +204,22 @@ class Indexer:
                 logger.bind(chunk_count=len(new_docs)).info("No cached chunks found")
 
         batches = [
-            new_docs[start : start + _EMBED_BATCH_SIZE]
-            for start in range(0, len(new_docs), _EMBED_BATCH_SIZE)
+            new_docs[start : start + batch_size]
+            for start in range(0, len(new_docs), batch_size)
         ]
         total_batches = len(batches)
         logger.bind(
             chunk_count=len(new_docs),
             batch_count=total_batches,
-            size=_EMBED_BATCH_SIZE,
+            size=batch_size,
             concurrency=_MAX_CONCURRENT_EMBED_BATCHES,
         ).info("Embedding chunk batches")
 
         all_embeddings = asyncio.run(_embed_all_batches(batches, self.config))
 
-        for batch_idx, (batch, embeddings) in enumerate(zip(batches, all_embeddings), start=1):
+        for batch_idx, (batch, embeddings) in enumerate(
+            zip(batches, all_embeddings), start=1
+        ):
             texts = [d.text for d in batch]
             ids = [_doc_id(t) for t in texts]
             self.collection.upsert(
@@ -207,7 +228,7 @@ class Indexer:
                 documents=texts,
                 metadatas=[d.metadata for d in batch],
             )
-            indexed_so_far = min(batch_idx * _EMBED_BATCH_SIZE, len(new_docs))
+            indexed_so_far = min(batch_idx * batch_size, len(new_docs))
             logger.bind(
                 done=indexed_so_far,
                 total=len(new_docs),
@@ -231,7 +252,9 @@ class Indexer:
         ).debug("Search requested")
 
         if n_results <= 0:
-            logger.warning("Search requested but document index is empty or top_k is zero")
+            logger.warning(
+                "Search requested but document index is empty or top_k is zero"
+            )
             return []
 
         query_embedding = (await _embed([query], self.config))[0]

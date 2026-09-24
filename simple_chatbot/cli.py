@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 from typing import Literal, Optional
@@ -11,12 +12,26 @@ from simple_chatbot.config import GuardConfig, SimpleChatbotConfig
 from simple_chatbot.indexer import Indexer
 from simple_chatbot.loader import load_documents
 from simple_chatbot.server import app, init
+from simple_chatbot.service_description import print_service_description, resolve_active
 
 cli = typer.Typer(name="simple-chatbot", add_completion=False)
 
 
 def _parse_guard_block_classes(s: str) -> list[str]:
     return [x.strip() for x in s.split(",") if x.strip()]
+
+
+def _parse_env_number(name: str, raw: Optional[str], cast):
+    """Parse a numeric env var, failing with an actionable message instead of a
+    bare ValueError traceback."""
+    if not raw:
+        return None
+    try:
+        return cast(raw)
+    except ValueError:
+        raise typer.BadParameter(
+            f"{name}={raw!r} is not a valid {cast.__name__}"
+        ) from None
 
 
 def _load_text_or_file(raw: Optional[str]) -> Optional[str]:
@@ -28,7 +43,9 @@ def _load_text_or_file(raw: Optional[str]) -> Optional[str]:
     return raw
 
 
-def _resolve_guard_api_key(raw_api_key: Optional[str], api_url: Optional[str]) -> Optional[str]:
+def _resolve_guard_api_key(
+    raw_api_key: Optional[str], api_url: Optional[str]
+) -> Optional[str]:
     if raw_api_key:
         return raw_api_key
     if api_url:
@@ -41,18 +58,100 @@ def _callback():
     """simple-chatbot — simple agentic RAG bot with an OpenAI-compatible server."""
 
 
+def _live_rag_tools() -> list:
+    """The tools the generic (live) RAG agent advertises at execution time,
+    mirroring `serve`: the scripted four-tool set when SIMPLE_CHATBOT_SCRIPTED_LLM
+    is enabled, otherwise just document search. No indexer is needed — only the
+    static tool schemas are read."""
+    scripted = os.environ.get("SIMPLE_CHATBOT_SCRIPTED_LLM", "").strip()
+    if scripted not in ("", "0", "false", "False", "no", "No"):
+        from simple_chatbot.tools import scripted_tools
+
+        return scripted_tools(None)
+    from simple_chatbot.tools import make_search_tool
+
+    return [make_search_tool(None)]
+
+
+@cli.command(name="tools")
+def tools_catalog(
+    agent: Optional[str] = typer.Argument(
+        None,
+        help=(
+            "Agent whose tool catalog to print: a fixture id (e.g. 'cs-routing') "
+            "or 'live-rag' for the generic RAG agent. Omit to use the active agent "
+            "(--default-fixture / SIMPLE_CHATBOT_DEFAULT_FIXTURE, else live-rag)."
+        ),
+    ),
+    default_fixture: Optional[str] = typer.Option(
+        None,
+        help=(
+            "Fixture id treated as the active agent when AGENT is omitted; falls "
+            "back to SIMPLE_CHATBOT_DEFAULT_FIXTURE."
+        ),
+    ),
+):
+    """Print an agent's tool catalog as an OpenAI Responses-API `tools` array (JSON).
+
+    The output is the exact, OpenAI-compliant flat tool shape the server advertises:
+    fixtures render the union of their agents' tools plus the generated `route`
+    tool; the generic RAG agent renders its configured tools projected into the
+    same shape.
+    """
+    from simple_chatbot.scenario_catalog import (
+        build_responses_tools,
+        build_responses_tools_from_defs,
+    )
+    from simple_chatbot.scenario_registry import load_fixtures
+    from simple_chatbot.service_description import LIVE_RAG_KEY
+
+    key = (
+        agent
+        or default_fixture
+        or os.environ.get("SIMPLE_CHATBOT_DEFAULT_FIXTURE")
+        or LIVE_RAG_KEY
+    )
+
+    if key == LIVE_RAG_KEY:
+        tools = build_responses_tools_from_defs(_live_rag_tools())
+    else:
+        registry = load_fixtures()
+        scenario = registry.get(key)
+        if scenario is None:
+            available = ", ".join([LIVE_RAG_KEY, *sorted(registry)])
+            raise typer.BadParameter(
+                f"unknown agent {key!r}; available: {available}"
+            )
+        tools = build_responses_tools(scenario)
+
+    typer.echo(json.dumps(tools, indent=2))
+
+
 @cli.command()
 def serve(
     docs_dir: Path = typer.Option(..., help="Directory containing documents to index"),
-    embedding_model: str = typer.Option("openai/text-embedding-3-small", help="litellm embedding model string"),
-    chat_model: str = typer.Option("openai/gpt-5.4-nano", help="litellm chat model string"),
-    chat_api_base: Optional[str] = typer.Option(None, help="API base URL for the chat model (e.g. vLLM: http://localhost:8000/v1)"),
-    embedding_api_base: Optional[str] = typer.Option(None, help="API base URL for the embedding model"),
+    embedding_model: str = typer.Option(
+        "openai/text-embedding-3-small", help="litellm embedding model string"
+    ),
+    chat_model: str = typer.Option(
+        "openai/gpt-5.4-nano", help="litellm chat model string"
+    ),
+    chat_api_base: Optional[str] = typer.Option(
+        None,
+        help="API base URL for the chat model (e.g. vLLM: http://localhost:8000/v1)",
+    ),
+    embedding_api_base: Optional[str] = typer.Option(
+        None, help="API base URL for the embedding model"
+    ),
     chunk_size: int = typer.Option(500, help="Characters per chunk"),
     chunk_overlap: int = typer.Option(50, help="Overlap between chunks in characters"),
     top_k: int = typer.Option(5, help="Number of documents returned per search"),
-    chroma_persist_dir: Path = typer.Option(Path("./.chroma"), help="ChromaDB storage directory"),
-    collection_name: str = typer.Option("simple_chatbot", help="ChromaDB collection name"),
+    chroma_persist_dir: Path = typer.Option(
+        Path("./.chroma"), help="ChromaDB storage directory"
+    ),
+    collection_name: str = typer.Option(
+        "simple_chatbot", help="ChromaDB collection name"
+    ),
     host: str = typer.Option("127.0.0.1", help="Server bind address"),
     port: int = typer.Option(8000, help="Server port"),
     api_key: Optional[str] = typer.Option(
@@ -62,22 +161,93 @@ def serve(
             "or X-API-Key; falls back to SIMPLE_CHATBOT_API_KEY"
         ),
     ),
-    max_tool_rounds: int = typer.Option(5, help="Max agentic loop iterations per request"),
+    default_fixture: Optional[str] = typer.Option(
+        None,
+        help=(
+            "Fixture id to run on /v1/responses when the request names no known "
+            "fixture (for clients that can't set the model); falls back to "
+            "SIMPLE_CHATBOT_DEFAULT_FIXTURE. An explicitly named fixture still wins."
+        ),
+    ),
+    scenario_mode: Optional[str] = typer.Option(
+        None,
+        help=(
+            "Server-level override for how fixtures run: 'deterministic' (replay "
+            "the authored script) or 'live' (model-driven via the configured chat "
+            "model, ignoring the script). Unset honors each fixture's own mode; "
+            "falls back to SIMPLE_CHATBOT_SCENARIO_MODE."
+        ),
+    ),
+    misbehavior_rate: Optional[float] = typer.Option(
+        None,
+        help=(
+            "Enable the EVIL RAG agent: probability (0.0–1.0) of injecting a "
+            "misbehavior at each pipeline site. Unset disables it (production/good "
+            "agent); falls back to SIMPLE_CHATBOT_MISBEHAVIOR_RATE."
+        ),
+    ),
+    misbehavior_modes: Optional[str] = typer.Option(
+        None,
+        help=(
+            "Comma-separated misbehavior modes: poison_retrieval, drop_retrieval, "
+            "ignore_retrieval, redundant_search, malformed_search, unknown_tool, "
+            "wrong_value. Falls back to SIMPLE_CHATBOT_MISBEHAVIOR_MODES."
+        ),
+    ),
+    misbehavior_seed: Optional[int] = typer.Option(
+        None,
+        help="Seed for reproducible misbehavior decisions (default 0); falls back to SIMPLE_CHATBOT_MISBEHAVIOR_SEED.",
+    ),
+    max_tool_rounds: int = typer.Option(
+        5, help="Max agentic loop iterations per request"
+    ),
     system_prompt: Optional[str] = typer.Option(
         None,
         help="System prompt prepended to every conversation; use @/path/to/file.txt to load from disk",
     ),
-    conversation_log_dir: Path = typer.Option(Path("./conversations"), help="Directory for conversation JSONL logs"),
-    temperature: Optional[float] = typer.Option(None, help="Sampling temperature (0–2); None uses the model default"),
-    top_p: Optional[float] = typer.Option(None, help="Nucleus sampling top-p; None uses the model default"),
-    gen_top_k: Optional[int] = typer.Option(None, help="Top-k sampling for generation; None uses the model default"),
-    min_p: Optional[float] = typer.Option(None, help="Min-p sampling threshold; None uses the model default"),
-    presence_penalty: Optional[float] = typer.Option(None, help="Presence penalty (-2 to 2); None uses the model default"),
-    frequency_penalty: Optional[float] = typer.Option(None, help="Frequency penalty (-2 to 2); None uses the model default"),
-    repetition_penalty: Optional[float] = typer.Option(None, help="Repetition penalty (>0); None uses the model default"),
-    reindex: bool = typer.Option(False, "--reindex", help="Force re-index even if collection already has documents"),
-    log_level: str = typer.Option("INFO", help="Logging level (TRACE, DEBUG, INFO, WARNING, ERROR)"),
-    log_format: Literal["pretty", "json"] = typer.Option("pretty", help="Operational log format"),
+    conversation_log_dir: Path = typer.Option(
+        Path("./conversations"), help="Directory for conversation JSONL logs"
+    ),
+    temperature: Optional[float] = typer.Option(
+        None, help="Sampling temperature (0–2); None uses the model default"
+    ),
+    top_p: Optional[float] = typer.Option(
+        None, help="Nucleus sampling top-p; None uses the model default"
+    ),
+    gen_top_k: Optional[int] = typer.Option(
+        None, help="Top-k sampling for generation; None uses the model default"
+    ),
+    min_p: Optional[float] = typer.Option(
+        None, help="Min-p sampling threshold; None uses the model default"
+    ),
+    presence_penalty: Optional[float] = typer.Option(
+        None, help="Presence penalty (-2 to 2); None uses the model default"
+    ),
+    frequency_penalty: Optional[float] = typer.Option(
+        None, help="Frequency penalty (-2 to 2); None uses the model default"
+    ),
+    repetition_penalty: Optional[float] = typer.Option(
+        None, help="Repetition penalty (>0); None uses the model default"
+    ),
+    reasoning_effort: Optional[str] = typer.Option(
+        None,
+        help=(
+            "Enable model reasoning/thinking via litellm's reasoning_effort "
+            "(minimal, low, medium, high, disable, none). Gemini 3+ maps this to "
+            "thinkingLevel + includeThoughts. Falls back to SIMPLE_CHATBOT_REASONING_EFFORT."
+        ),
+    ),
+    reindex: bool = typer.Option(
+        False,
+        "--reindex",
+        help="Force re-index even if collection already has documents",
+    ),
+    log_level: str = typer.Option(
+        "INFO", help="Logging level (TRACE, DEBUG, INFO, WARNING, ERROR)"
+    ),
+    log_format: Literal["pretty", "json"] = typer.Option(
+        "pretty", help="Operational log format"
+    ),
     enable_guard: bool = typer.Option(
         False,
         "--enable-guard/--no-enable-guard",
@@ -137,6 +307,40 @@ def serve(
         logger.bind(api_base=embedding_api_base).info("Embedding API base override")
 
     api_key_effective = api_key or os.environ.get("SIMPLE_CHATBOT_API_KEY")
+    default_fixture_effective = default_fixture or os.environ.get(
+        "SIMPLE_CHATBOT_DEFAULT_FIXTURE"
+    )
+    scenario_mode_effective = scenario_mode or os.environ.get(
+        "SIMPLE_CHATBOT_SCENARIO_MODE"
+    )
+    misbehavior_rate_raw = misbehavior_rate
+    if misbehavior_rate_raw is None:
+        env_rate = os.environ.get("SIMPLE_CHATBOT_MISBEHAVIOR_RATE")
+        misbehavior_rate_raw = _parse_env_number(
+            "SIMPLE_CHATBOT_MISBEHAVIOR_RATE", env_rate, float
+        )
+    misbehavior_modes_raw = misbehavior_modes or os.environ.get(
+        "SIMPLE_CHATBOT_MISBEHAVIOR_MODES"
+    )
+    misbehavior_modes_list = (
+        [m.strip() for m in misbehavior_modes_raw.split(",") if m.strip()]
+        if misbehavior_modes_raw
+        else []
+    )
+    # `0` is a valid explicit seed, so distinguish "flag not passed" (None) from
+    # an explicit value before falling back to the env var.
+    if misbehavior_seed is not None:
+        misbehavior_seed_effective = misbehavior_seed
+    else:
+        env_seed = os.environ.get("SIMPLE_CHATBOT_MISBEHAVIOR_SEED")
+        misbehavior_seed_effective = (
+            _parse_env_number("SIMPLE_CHATBOT_MISBEHAVIOR_SEED", env_seed, int)
+            if env_seed
+            else 0
+        )
+    reasoning_effort_effective = reasoning_effort or os.environ.get(
+        "SIMPLE_CHATBOT_REASONING_EFFORT"
+    )
     guard_api_key_effective = _resolve_guard_api_key(guard_api_key, guard_api_url)
     guard_cfg = GuardConfig(
         enabled=enable_guard,
@@ -163,6 +367,11 @@ def serve(
         host=host,
         port=port,
         api_key=api_key_effective,
+        default_fixture=default_fixture_effective,
+        scenario_mode=scenario_mode_effective,  # type: ignore
+        misbehavior_rate=misbehavior_rate_raw,
+        misbehavior_modes=misbehavior_modes_list,
+        misbehavior_seed=misbehavior_seed_effective,
         max_tool_rounds=max_tool_rounds,
         system_prompt=_load_text_or_file(system_prompt),
         conversation_log_dir=conversation_log_dir,
@@ -173,6 +382,7 @@ def serve(
         presence_penalty=presence_penalty,
         frequency_penalty=frequency_penalty,
         repetition_penalty=repetition_penalty,
+        reasoning_effort=reasoning_effort_effective,  # type: ignore
         guard=guard_cfg,
     )
 
@@ -204,6 +414,12 @@ def serve(
         indexer.index(docs, force=reindex)
 
         init(config, indexer)
+
+    aisd_label, aisd_text = resolve_active(config)
+    logger.bind(aisd=aisd_label).info(
+        "Printing AI service description for the active chatbot"
+    )
+    print_service_description(aisd_label, aisd_text)
 
     logger.bind(host=host, port=port).info("Starting HTTP server")
     uvicorn.run(app, host=host, port=port, log_level="warning")

@@ -16,7 +16,7 @@ class _FakeAgent:
         self._tool_messages = tool_messages or []
         self._usage = usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
-    async def chat(self, messages: list[dict]) -> ChatResult:
+    async def chat(self, messages: list[dict], max_output_tokens: int | None = None) -> ChatResult:
         self.calls.append(list(messages))
         # final_messages = the input we received plus the final assistant message
         final = list(messages) + [{"role": "assistant", "content": self._content}]
@@ -30,7 +30,7 @@ class _FakeAgent:
 
 
 class _FakeConversationLogger:
-    async def log(self, conversation_id, messages, response, chunks) -> None:
+    async def log(self, conversation_id, messages, response, chunks, misbehavior_injections=None) -> None:
         return None
 
 
@@ -116,6 +116,30 @@ class ResponsesEndpointTests(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         detail = response.json()["detail"]["error"]
         self.assertEqual(detail["param"], "stream")
+
+    def test_provider_failure_surfaces_as_structured_error(self):
+        """A provider/agent failure must reach the client as a structured error
+        envelope (so the OpenAI SDK / chat REPL can show the cause), not a bare
+        unhandled 500 whose detail only lives in the server log."""
+        import litellm
+
+        class _RaisingAgent:
+            async def chat(self, messages, max_output_tokens=None):
+                raise litellm.exceptions.APIConnectionError(
+                    message="Unable to convert openai tool calls to gemini tool calls",
+                    llm_provider="vertex_ai",
+                    model="gemini-2.5-pro",
+                )
+
+        server._agent = _RaisingAgent()
+        client = TestClient(server.app, raise_server_exceptions=False)
+        response = client.post("/v1/responses", json={"input": "hello"})
+
+        self.assertEqual(response.status_code, 502, response.text)
+        error = response.json()["detail"]["error"]
+        self.assertEqual(error["type"], "upstream_provider_error")
+        self.assertIn("APIConnectionError", error["message"])
+        self.assertIn("gemini tool calls", error["message"])
 
     def test_unknown_input_item_type_returns_400(self):
         response = self.client.post(
