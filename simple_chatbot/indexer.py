@@ -1,6 +1,8 @@
 import asyncio
+import functools
 import hashlib
 import json
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import chromadb
@@ -60,6 +62,21 @@ async def _embed_all_batches(
     return await asyncio.gather(*(_bounded(b) for b in batches))
 
 
+def _similarity_from_distance(distance: float | None, metric: str) -> float | None:
+    """Convert a Chroma distance to a 0-1 similarity, or None when the metric has
+    no bounded similarity.
+
+    Chroma returns ``1 - cosine_similarity`` for "cosine" and ``1 - inner_product``
+    for "ip", so both invert the same way (and coincide for L2-normalised vectors,
+    which OpenAI embeddings are). "l2" is a squared euclidean distance, unbounded
+    above, so no 0-1 similarity exists — config rejects pairing it with a
+    threshold, and this returns None so a stray caller filters nothing.
+    """
+    if distance is None or metric == "l2":
+        return None
+    return 1.0 - distance
+
+
 def _config_fingerprint(config: SimpleChatbotConfig) -> dict:
     return {
         "embedding_model": config.embedding_model,
@@ -67,6 +84,11 @@ def _config_fingerprint(config: SimpleChatbotConfig) -> dict:
         "chunk_size": config.chunk_size,
         "chunk_overlap": config.chunk_overlap,
         "collection_name": config.collection_name,
+        # The metric is fixed when the collection is created ("hnsw:space"), and
+        # get_or_create_collection silently ignores new metadata for a collection
+        # that already exists. Without it in the fingerprint, changing the metric
+        # would appear to work while queries kept using the old space.
+        "distance_metric": config.distance_metric,
     }
 
 
@@ -106,12 +128,31 @@ class Indexer:
 
         self.collection = self._client.get_or_create_collection(
             name=config.collection_name,
-            metadata={"hnsw:space": "cosine"},
+            metadata={"hnsw:space": config.distance_metric},
         )
+        # Confine ALL Chroma access to ONE dedicated thread. The chromadb_rust_bindings
+        # core (SQLite-backed) is thread-affine and SIGSEGVs when touched from multiple
+        # threads at once — e.g. a search() running on an asyncio.to_thread worker while
+        # another turn's document_count() runs collection.count() on the event loop.
+        # A concurrency limit isn't enough (to_thread picks arbitrary threads); every
+        # collection call must run on this single thread. Use _chroma_call/_achroma_call.
+        self._chroma_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="chroma")
+
         logger.bind(
             collection=config.collection_name,
             count=self.collection.count(),
         ).info("ChromaDB collection ready")
+
+    def _chroma_call(self, fn, *args, **kwargs):
+        """Run a Chroma collection op on the dedicated Chroma thread (sync caller)."""
+        return self._chroma_pool.submit(functools.partial(fn, *args, **kwargs)).result()
+
+    async def _achroma_call(self, fn, *args, **kwargs):
+        """Run a Chroma collection op on the dedicated Chroma thread (async caller)."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            self._chroma_pool, functools.partial(fn, *args, **kwargs)
+        )
 
     def _save_meta(self) -> None:
         self._meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -127,16 +168,16 @@ class Indexer:
         )
         self.collection = self._client.get_or_create_collection(
             name=self.config.collection_name,
-            metadata={"hnsw:space": "cosine"},
+            metadata={"hnsw:space": self.config.distance_metric},
         )
 
     def is_populated(self) -> bool:
-        count = self.collection.count()
+        count = self._chroma_call(self.collection.count)
         logger.bind(count=count).debug("Collection count check")
         return count > 0
 
     def document_count(self) -> int:
-        count = self.collection.count()
+        count = self._chroma_call(self.collection.count)
         logger.bind(count=count).debug("Collection count check")
         return count
 
@@ -242,7 +283,7 @@ class Indexer:
         ).info("Indexing complete")
 
     async def search(self, query: str) -> list[Document]:
-        count = self.document_count()
+        count = await self._achroma_call(self.collection.count)
         n_results = min(self.config.top_k, count)
         logger.bind(
             query=query,
@@ -258,15 +299,52 @@ class Indexer:
             return []
 
         query_embedding = (await _embed([query], self.config))[0]
-        results = await asyncio.to_thread(
+        results = await self._achroma_call(
             self.collection.query,
             query_embeddings=[query_embedding],
             n_results=n_results,
+            include=["documents", "metadatas", "distances"],
         )
 
+        distances = (results.get("distances") or [None])[0]
+        threshold = self.config.similarity_threshold
+
         docs: list[Document] = []
-        for text, metadata in zip(results["documents"][0], results["metadatas"][0]):
+        dropped = 0
+        for i, (text, metadata) in enumerate(
+            zip(results["documents"][0], results["metadatas"][0])
+        ):
+            if threshold is not None and distances is not None:
+                similarity = _similarity_from_distance(
+                    distances[i], self.config.distance_metric
+                )
+                if similarity is not None and similarity < threshold:
+                    dropped += 1
+                    continue
             docs.append(Document(text=text, metadata=metadata))
+
+        if threshold is not None:
+            if distances is None:
+                # Never silently drop everything because the backend withheld
+                # distances — fall through unfiltered and say so.
+                logger.bind(threshold=threshold).warning(
+                    "similarity_threshold set but Chroma returned no distances — "
+                    "returning unfiltered results"
+                )
+            else:
+                logger.bind(
+                    threshold=threshold,
+                    metric=self.config.distance_metric,
+                    kept=len(docs),
+                    dropped=dropped,
+                ).debug("Similarity threshold applied")
+                if not docs:
+                    logger.bind(
+                        threshold=threshold, dropped=dropped, query=query
+                    ).warning(
+                        "similarity_threshold filtered out every retrieved chunk — "
+                        "the model will answer with no retrieved context"
+                    )
 
         logger.bind(
             result_count=len(docs),

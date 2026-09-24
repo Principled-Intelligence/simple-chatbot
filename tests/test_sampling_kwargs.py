@@ -48,3 +48,18 @@ class SamplingKwargsTests(unittest.TestCase):
             )
             self.assertIsNone(config.reasoning_effort)
             self.assertNotIn("reasoning_effort", sampling_kwargs(config))
+
+    def test_reasoning_effort_accepts_provider_specific_values(self):
+        # Accepted values are provider-specific (xhigh on gpt-5.x, max on Opus
+        # 4.6+), so the config passes them through rather than rejecting them.
+        for value in ("xhigh", "max"):
+            with TemporaryDirectory() as tmp:
+                config = SimpleChatbotConfig(
+                    docs_dir=Path(tmp) / "docs", reasoning_effort=value
+                )
+                self.assertEqual(sampling_kwargs(config), {"reasoning_effort": value})
+
+    def test_thinking_wrapped_as_object(self):
+        with TemporaryDirectory() as tmp:
+            config = SimpleChatbotConfig(docs_dir=Path(tmp) / "docs", thinking="disabled")
+            self.assertEqual(sampling_kwargs(config), {"thinking": {"type": "disabled"}})

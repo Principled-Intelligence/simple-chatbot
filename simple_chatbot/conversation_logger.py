@@ -28,6 +28,32 @@ def _conversation_log_filename(conversation_id: str) -> str:
     return f"{digest}.jsonl"
 
 
+def _derive_tool_trace(tool_messages: list[dict]) -> tuple[list[dict], str]:
+    """Extract the tool trace from the agent's chat-shape tool_messages.
+
+    Returns (tool_calls, function_call_output) where:
+    - tool_calls: [{"name", "arguments"}] for every assistant tool call.
+    - function_call_output: the concatenated content of the `tool` role
+      messages — the literal function_call_output already formatted as
+      "[source]\\n<text>" blocks by the search tool.
+    """
+    tool_calls: list[dict] = []
+    outputs: list[str] = []
+    for m in tool_messages:
+        role = m.get("role")
+        if role == "assistant":
+            for tc in m.get("tool_calls") or []:
+                fn = tc.get("function") or {}
+                tool_calls.append(
+                    {"name": fn.get("name", ""), "arguments": fn.get("arguments", "") or ""}
+                )
+        elif role == "tool":
+            content = m.get("content")
+            if content:
+                outputs.append(content)
+    return tool_calls, "\n\n".join(outputs)
+
+
 class ConversationLogger:
     """Append-only, per-conversation JSONL logger safe for concurrent use.
 
@@ -62,18 +88,23 @@ class ConversationLogger:
         messages: list[dict],
         response: str,
         chunks: list[dict],
+        tool_messages: list[dict] | None = None,
         misbehavior_injections: list[dict] | None = None,
     ) -> None:
         last_user = next(
             (m.get("content") for m in reversed(messages) if m.get("role") == "user"),
             None,
         )
+        tool_calls, function_call_output = _derive_tool_trace(tool_messages or [])
         record = {
             "timestamp": datetime.now().isoformat(),
             "conversation_id": conversation_id,
             "turn_index": sum(1 for m in messages if m.get("role") == "user"),
             "last_user_message": last_user,
             "response": response,
+            "made_tool_call": bool(tool_calls),
+            "tool_calls": tool_calls,
+            "function_call_output": function_call_output,
             "retrieved_chunks": chunks,
         }
         if misbehavior_injections:

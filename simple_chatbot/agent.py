@@ -9,6 +9,7 @@ from simple_chatbot.config import SimpleChatbotConfig
 from simple_chatbot.guard import ScopeGuardGate
 from simple_chatbot.indexer import Indexer
 from simple_chatbot.loader import Document
+from simple_chatbot.ratelimit import build_rate_limiter
 from simple_chatbot.scenario_catalog import build_responses_tools_from_defs
 from simple_chatbot.scripted_indexer import ScriptedIndexer
 from simple_chatbot.tools import (
@@ -110,11 +111,17 @@ def sampling_kwargs(config: SimpleChatbotConfig) -> dict:
         "repetition_penalty": "repetition_penalty",
         "reasoning_effort": "reasoning_effort",
     }
-    return {
+    out = {
         wire: getattr(config, attr)
         for attr, wire in field_map.items()
         if getattr(config, attr) is not None
     }
+    # `thinking` is not a straight passthrough like the rest: the config holds
+    # the bare type ("disabled"/"adaptive") because that is what a CLI flag can
+    # carry, while the wire wants an object. litellm forwards it untouched.
+    if config.thinking is not None:
+        out["thinking"] = {"type": config.thinking}
+    return out
 
 
 @dataclass
@@ -150,6 +157,21 @@ class Agent:
         self.indexer = indexer
         self.gate = gate
         self._acompletion = acompletion
+        # Pick the downstream model-call backend. An injected `acompletion`
+        # (tests, scripted LLM) always wins; otherwise route through the Responses
+        # API when configured (gpt-5.6 tools+reasoning). Leave None for the default
+        # chat-completions path so `litellm.acompletion` resolves at call time (keeps
+        # it patchable in tests).
+        if acompletion is not None:
+            self._model_call = acompletion
+        elif config.use_responses_api:
+            from simple_chatbot.responses_adapter import responses_acompletion
+
+            self._model_call = responses_acompletion
+        else:
+            self._model_call = None
+        # Opt-in outbound throttle (None -> no limiter, unchanged call path).
+        self._rate_limiter = build_rate_limiter(config.rpm_limit)
         self.tools = tools if tools is not None else [make_search_tool(indexer)]
         self._tool_by_name = {t.name: t for t in self.tools}
         logger.bind(
@@ -157,6 +179,24 @@ class Agent:
             max_tool_rounds=config.max_tool_rounds,
             tool_names=list(self._tool_by_name),
         ).info("Agent initialised")
+
+    async def _call_model(self, **kwargs: Any) -> Any:
+        """Single funnel for every downstream model call.
+
+        Resolves `litellm.acompletion` lazily (keeps it patchable in tests) and,
+        when `rpm_limit` is configured, waits for an outbound slot first. The
+        limiter is acquired per attempt made *here*; litellm's own `num_retries`
+        retries inside one call and is left alone — once the base rate sits under
+        the provider ceiling those retries are a rare safety net rather than the
+        thing driving the overrun.
+        """
+        if self._rate_limiter is not None:
+            waited = await self._rate_limiter.acquire()
+            if waited:
+                logger.bind(
+                    waited_s=round(waited, 2), rpm_limit=self._rate_limiter.rpm
+                ).debug("Throttled outbound model call")
+        return await (self._model_call or litellm.acompletion)(**kwargs)
 
     def _sampling_kwargs(self) -> dict:
         """Return only the sampling params the user set explicitly (skip None)."""
@@ -243,6 +283,11 @@ class Agent:
                 logger.bind(api_base=self.config.chat_api_base).debug(
                     "Using custom chat API base"
                 )
+            if self.config.provider_routing:
+                # OpenRouter-style routing preferences ride in the request body as
+                # `provider`; litellm forwards `extra_body` untouched. Pins the
+                # serving backend (e.g. quantization) so results stay attributable.
+                kwargs["extra_body"] = {"provider": self.config.provider_routing}
             kwargs.update(self._sampling_kwargs())
             if max_output_tokens is not None:
                 kwargs["max_tokens"] = max_output_tokens
@@ -251,7 +296,7 @@ class Agent:
                 model=self.config.chat_model,
                 messages_in_context=len(working),
             ).info("Calling LLM")
-            response = await (self._acompletion or litellm.acompletion)(**kwargs)
+            response = await self._call_model(**kwargs)
             choice = response.choices[0]
             assistant_msg = choice.message
 
@@ -395,9 +440,7 @@ class Agent:
         final_response = ""
         final_reasoning = None
         try:
-            final_response_obj = await (self._acompletion or litellm.acompletion)(
-                **forced_response_kwargs
-            )
+            final_response_obj = await self._call_model(**forced_response_kwargs)
             final_usage = final_response_obj.usage
             if final_usage:
                 usage_totals["prompt_tokens"] += (

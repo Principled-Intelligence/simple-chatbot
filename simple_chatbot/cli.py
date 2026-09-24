@@ -17,6 +17,27 @@ from simple_chatbot.service_description import print_service_description, resolv
 cli = typer.Typer(name="simple-chatbot", add_completion=False)
 
 
+def _parse_provider_routing(raw: Optional[str]) -> Optional[dict]:
+    """Parse the --provider-routing JSON object, failing loudly on bad input.
+
+    A silently-ignored routing pin is worse than a crash: the run would look
+    correct while the numbers came from whichever backend the gateway happened to
+    pick.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise typer.BadParameter(f"--provider-routing must be valid JSON: {exc}") from exc
+    if not isinstance(parsed, dict) or not parsed:
+        raise typer.BadParameter(
+            "--provider-routing must be a non-empty JSON object, "
+            'e.g. \'{"quantizations": ["bf16"]}\''
+        )
+    return parsed
+
+
 def _parse_guard_block_classes(s: str) -> list[str]:
     return [x.strip() for x in s.split(",") if x.strip()]
 
@@ -146,6 +167,21 @@ def serve(
     chunk_size: int = typer.Option(500, help="Characters per chunk"),
     chunk_overlap: int = typer.Option(50, help="Overlap between chunks in characters"),
     top_k: int = typer.Option(5, help="Number of documents returned per search"),
+    distance_metric: Literal["cosine", "l2", "ip"] = typer.Option(
+        "cosine",
+        help=(
+            "Vector distance metric for the Chroma collection. Part of the index "
+            "fingerprint: changing it rebuilds the index"
+        ),
+    ),
+    similarity_threshold: Optional[float] = typer.Option(
+        None,
+        help=(
+            "Drop retrieved chunks below this 0-1 similarity (applied after top-k, "
+            "so fewer than top-k may be returned). None disables filtering. "
+            "Not supported with --distance-metric l2"
+        ),
+    ),
     chroma_persist_dir: Path = typer.Option(
         Path("./.chroma"), help="ChromaDB storage directory"
     ),
@@ -232,11 +268,17 @@ def serve(
     reasoning_effort: Optional[str] = typer.Option(
         None,
         help=(
-            "Enable model reasoning/thinking via litellm's reasoning_effort "
-            "(minimal, low, medium, high, disable, none). Gemini 3+ maps this to "
-            "thinkingLevel + includeThoughts. Falls back to SIMPLE_CHATBOT_REASONING_EFFORT."
+            "Enable model reasoning/thinking via litellm's reasoning_effort. "
+            "Passed through as-is: accepted values are provider-specific (e.g. "
+            "none/minimal/low/medium/high, xhigh on gpt-5.x, max on Opus 4.6+, "
+            "disable on Gemini). 'none' lets gpt-5.x use function tools on chat "
+            "completions. Falls back to SIMPLE_CHATBOT_REASONING_EFFORT."
         ),
     ),
+    thinking: Optional[str] = typer.Option(None, help="Anthropic thinking.type, sent raw: 'disabled' or 'adaptive'. NOT a synonym for --reasoning-effort none: that sends no thinking parameter at all, which leaves an adaptive-default model (Sonnet 5, Opus 4.6+) thinking. 'disabled' is the only thing that turns thinking off on those models. None sends nothing"),
+    use_responses_api: bool = typer.Option(False, "--use-responses-api/--no-use-responses-api", help="Route the downstream model call through the OpenAI Responses API (litellm.aresponses) instead of chat completions. Needed for gpt-5.6 reasoning models that reject function tools + reasoning on /v1/chat/completions"),
+    rpm_limit: Optional[int] = typer.Option(None, help="Cap outbound calls to the chat model at this many requests per rolling minute, shared across all concurrent requests. Off by default; set it only for a provider that enforces a low per-account ceiling (e.g. OpenRouter's 10 req/min new-account cap on newly launched models)"),
+    provider_routing: Optional[str] = typer.Option(None, help='JSON object of gateway provider-routing preferences, sent as the request body\'s `provider` (OpenRouter only). Pins the serving backend for an open-weight model offered by several hosts at different quantizations, e.g. \'{"quantizations": ["bf16"]}\'. Off by default (gateway default routing)'),
     reindex: bool = typer.Option(
         False,
         "--reindex",
@@ -297,6 +339,8 @@ def serve(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         top_k=top_k,
+        distance_metric=distance_metric,
+        similarity_threshold=similarity_threshold,
         max_tool_rounds=max_tool_rounds,
         collection=collection_name,
         chroma_dir=str(chroma_persist_dir),
@@ -362,6 +406,8 @@ def serve(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         top_k=top_k,
+        distance_metric=distance_metric,
+        similarity_threshold=similarity_threshold,
         chroma_persist_dir=chroma_persist_dir,
         collection_name=collection_name,
         host=host,
@@ -383,6 +429,10 @@ def serve(
         frequency_penalty=frequency_penalty,
         repetition_penalty=repetition_penalty,
         reasoning_effort=reasoning_effort_effective,  # type: ignore
+        thinking=thinking,
+        use_responses_api=use_responses_api,
+        rpm_limit=rpm_limit,
+        provider_routing=_parse_provider_routing(provider_routing),
         guard=guard_cfg,
     )
 

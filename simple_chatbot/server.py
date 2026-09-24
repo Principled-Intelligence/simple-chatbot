@@ -295,6 +295,7 @@ async def chat_completions(request: Request, body: ChatCompletionRequest):
             messages=body.messages,
             response=result.content,
             chunks=[{"text": d.text, **d.metadata} for d in result.retrieved_chunks],
+            tool_messages=result.tool_messages,
         )
 
         return {
@@ -476,6 +477,7 @@ async def responses_create(request: Request, body: ResponsesRequest):
             messages=messages,
             response=result.content,
             chunks=[{"text": d.text, **d.metadata} for d in result.retrieved_chunks],
+            tool_messages=result.tool_messages,
             misbehavior_injections=injection_dicts,
         )
 
