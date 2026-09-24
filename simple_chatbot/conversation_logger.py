@@ -89,6 +89,7 @@ class ConversationLogger:
         response: str,
         chunks: list[dict],
         tool_messages: list[dict] | None = None,
+        misbehavior_injections: list[dict] | None = None,
     ) -> None:
         last_user = next(
             (m.get("content") for m in reversed(messages) if m.get("role") == "user"),
@@ -106,6 +107,8 @@ class ConversationLogger:
             "function_call_output": function_call_output,
             "retrieved_chunks": chunks,
         }
+        if misbehavior_injections:
+            record["misbehavior_injections"] = misbehavior_injections
         line = json.dumps(record, ensure_ascii=False) + "\n"
         path = self._dir / _conversation_log_filename(conversation_id)
 

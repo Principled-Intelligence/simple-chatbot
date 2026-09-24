@@ -32,6 +32,37 @@ class ConversationLoggerTests(unittest.TestCase):
             record = json.loads(log_files[0].read_text(encoding="utf-8"))
             self.assertEqual(record["conversation_id"], "../escaped")
 
+    def test_misbehavior_injections_recorded_when_present(self):
+        with TemporaryDirectory() as tmp:
+            log_dir = Path(tmp) / "logs"
+            logger = ConversationLogger(log_dir)
+            injections = [{"stage": "decision", "mode": "drop_retrieval", "turn": 1}]
+
+            asyncio.run(
+                logger.log(
+                    conversation_id="c1",
+                    messages=[{"role": "user", "content": "hi"}],
+                    response="ok",
+                    chunks=[],
+                    misbehavior_injections=injections,
+                )
+            )
+            asyncio.run(
+                logger.log(
+                    conversation_id="c1",
+                    messages=[{"role": "user", "content": "hi again"}],
+                    response="ok",
+                    chunks=[],
+                )
+            )
+
+            lines = next(log_dir.glob("*.jsonl")).read_text(encoding="utf-8").splitlines()
+            first = json.loads(lines[0])
+            second = json.loads(lines[1])
+            self.assertEqual(first["misbehavior_injections"], injections)
+            # absent (not null) when there were no injections for the turn
+            self.assertNotIn("misbehavior_injections", second)
+
     def test_same_conversation_id_uses_same_hashed_log_file(self):
         with TemporaryDirectory() as tmp:
             log_dir = Path(tmp) / "logs"

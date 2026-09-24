@@ -22,6 +22,10 @@ from simple_chatbot.loader import Document
 
 SEARCH_TOOL_NAME = "search_documents"
 
+# Invalid-JSON marker for the malformed-args knob, shared by the deterministic
+# engine and the evil agent. `scripted_llm` mirrors this same literal inline.
+MALFORMED_TOOL_ARGS = "{intentionally_malformed_json"
+
 
 SEARCH_TOOL_SCHEMA: dict = {
     "type": "function",
@@ -49,10 +53,14 @@ SEARCH_TOOL = SEARCH_TOOL_SCHEMA
 class ToolResult:
     """Result of running a tool. `text` is the string returned to the LLM as
     the tool message content. `chunks` is non-empty only for search-style
-    tools that surface document hits to the conversation logger."""
+    tools that surface document hits to the conversation logger. `is_error`
+    flags a failed call (bad arguments, validation failure) so the Responses
+    adapter can map it to a non-"completed" status; the text is still fed back
+    to the model regardless."""
 
     text: str
     chunks: list[Document] = field(default_factory=list)
+    is_error: bool = False
 
 
 @dataclass
@@ -158,11 +166,12 @@ def make_search_tool(indexer) -> ToolDef:
     async def executor(arguments: str) -> ToolResult:
         args, error = _parse_args(SEARCH_TOOL_NAME, arguments)
         if error:
-            return ToolResult(text=f"Tool error: {error}")
+            return ToolResult(text=f"Tool error: {error}", is_error=True)
         query = args.get("query")
         if not isinstance(query, str) or not query.strip():
             return ToolResult(
-                text=f"Tool error: {SEARCH_TOOL_NAME!r} requires a non-empty string 'query' argument"
+                text=f"Tool error: {SEARCH_TOOL_NAME!r} requires a non-empty string 'query' argument",
+                is_error=True,
             )
 
         results = await indexer.search(query)
@@ -188,11 +197,12 @@ def make_calculate_tool() -> ToolDef:
     async def executor(arguments: str) -> ToolResult:
         args, error = _parse_args(CALCULATE_TOOL_NAME, arguments)
         if error:
-            return ToolResult(text=f"Tool error: {error}")
+            return ToolResult(text=f"Tool error: {error}", is_error=True)
         expression = args.get("expression")
         if not isinstance(expression, str) or not expression.strip():
             return ToolResult(
-                text=f"Tool error: {CALCULATE_TOOL_NAME!r} requires a non-empty string 'expression' argument"
+                text=f"Tool error: {CALCULATE_TOOL_NAME!r} requires a non-empty string 'expression' argument",
+                is_error=True,
             )
         return ToolResult(text=f"[scripted] calculate({expression!r}) = <fake-numeric-result>")
 
@@ -205,11 +215,12 @@ def make_get_current_time_tool() -> ToolDef:
     async def executor(arguments: str) -> ToolResult:
         args, error = _parse_args(GET_CURRENT_TIME_TOOL_NAME, arguments)
         if error:
-            return ToolResult(text=f"Tool error: {error}")
+            return ToolResult(text=f"Tool error: {error}", is_error=True)
         tz = args.get("tz")
         if tz is not None and not isinstance(tz, str):
             return ToolResult(
-                text=f"Tool error: {GET_CURRENT_TIME_TOOL_NAME!r} 'tz' must be a string if provided"
+                text=f"Tool error: {GET_CURRENT_TIME_TOOL_NAME!r} 'tz' must be a string if provided",
+                is_error=True,
             )
         if tz:
             return ToolResult(text=f"[scripted] current time in {tz}: 2026-05-27T12:00:00")
@@ -224,11 +235,12 @@ def make_lookup_user_tool() -> ToolDef:
     async def executor(arguments: str) -> ToolResult:
         args, error = _parse_args(LOOKUP_USER_TOOL_NAME, arguments)
         if error:
-            return ToolResult(text=f"Tool error: {error}")
+            return ToolResult(text=f"Tool error: {error}", is_error=True)
         user_id = args.get("user_id")
         if not isinstance(user_id, str) or not user_id.strip():
             return ToolResult(
-                text=f"Tool error: {LOOKUP_USER_TOOL_NAME!r} requires a non-empty string 'user_id' argument"
+                text=f"Tool error: {LOOKUP_USER_TOOL_NAME!r} requires a non-empty string 'user_id' argument",
+                is_error=True,
             )
         return ToolResult(
             text=(
