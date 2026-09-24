@@ -462,6 +462,8 @@ simple-chatbot serve --docs-dir PATH [OPTIONS]
 | `--chunk-size` | `500` | Characters per chunk; must be greater than `0` |
 | `--chunk-overlap` | `50` | Overlap between chunks; must satisfy `0 <= overlap < chunk_size` |
 | `--top-k` | `5` | Chunks returned per search |
+| `--distance-metric` | `cosine` | Vector metric for the collection: `cosine`, `l2`, or `ip`. Part of the index fingerprint — changing it rebuilds the index |
+| `--similarity-threshold` | `None` | Drop retrieved chunks below this 0–1 similarity (applied after top-k, so fewer than `--top-k` may be returned). Not supported with `--distance-metric l2` |
 | `--chroma-persist-dir` | `./.chroma` | Where ChromaDB stores vectors |
 | `--collection-name` | `simple_chatbot` | ChromaDB collection name |
 | `--host` | `127.0.0.1` | Server bind address |
@@ -477,6 +479,8 @@ simple-chatbot serve --docs-dir PATH [OPTIONS]
 | `--presence-penalty` | `None` | Presence penalty (−2 to 2); omit to use the model default |
 | `--frequency-penalty` | `None` | Frequency penalty (−2 to 2); omit to use the model default |
 | `--repetition-penalty` | `None` | Repetition penalty (>0); omit to use the model default |
+| `--reasoning-effort` | `None` | Reasoning effort for reasoning models (`none`/`minimal`/`low`/`medium`/`high`); `none` lets gpt-5.x use function tools on chat completions |
+| `--use-responses-api` | off | Route the downstream model call through the OpenAI Responses API instead of chat completions |
 | `--reindex` | off | Clear the collection and rebuild it from current documents |
 | `--log-level` | `INFO` | `TRACE`, `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
 | `--log-format` | `pretty` | Operational log format: `pretty` or `json` |
