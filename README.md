@@ -481,6 +481,9 @@ simple-chatbot serve --docs-dir PATH [OPTIONS]
 | `--repetition-penalty` | `None` | Repetition penalty (>0); omit to use the model default |
 | `--reasoning-effort` | `None` | Reasoning effort for reasoning models (`none`/`minimal`/`low`/`medium`/`high`); `none` lets gpt-5.x use function tools on chat completions |
 | `--use-responses-api` | off | Route the downstream model call through the OpenAI Responses API instead of chat completions |
+| `--thinking` | `None` | Anthropic `thinking.type`, sent as-is: `disabled` or `adaptive`. Not the same as `--reasoning-effort none`, which sends nothing and leaves adaptive-default models (Sonnet 5, Opus 4.6+) thinking |
+| `--rpm-limit` | `None` | Cap outbound model calls at N per rolling minute, shared across all concurrent requests. Use only for providers with a low per-account ceiling |
+| `--provider-routing` | `None` | JSON object sent as the request body's `provider` (OpenRouter only), e.g. `'{"quantizations": ["bf16"]}'`, to pin the serving backend |
 | `--reindex` | off | Clear the collection and rebuild it from current documents |
 | `--log-level` | `INFO` | `TRACE`, `DEBUG`, `INFO`, `WARNING`, or `ERROR` |
 | `--log-format` | `pretty` | Operational log format: `pretty` or `json` |
